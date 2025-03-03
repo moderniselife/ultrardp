@@ -1,9 +1,11 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"sync"
+	"github.com/kbinani/screenshot"
 	"github.com/moderniselife/ultrardp/protocol"
 )
 
@@ -139,20 +141,29 @@ func (s *Server) handleClient(conn net.Conn) {
 
 // detectMonitors identifies the available monitors on the system
 func detectMonitors() (*protocol.MonitorConfig, error) {
-	// TODO: Implement platform-specific monitor detection
-	// This is a placeholder implementation
+	// Get all active displays using screenshot package
+	displays := screenshot.NumActiveDisplays()
+	if displays < 1 {
+		return nil, fmt.Errorf("no active displays found")
+	}
+
+	// Create monitor config
 	config := &protocol.MonitorConfig{
-		MonitorCount: 1,
-		Monitors: []protocol.MonitorInfo{
-			{
-				ID:        1,
-				Width:     1920,
-				Height:    1080,
-				PositionX: 0,
-				PositionY: 0,
-				Primary:   true,
-			},
-		},
+		MonitorCount: uint32(displays),
+		Monitors:     make([]protocol.MonitorInfo, displays),
+	}
+
+	// Get information for each display
+	for i := 0; i < displays; i++ {
+		bounds := screenshot.GetDisplayBounds(i)
+		config.Monitors[i] = protocol.MonitorInfo{
+			ID:        uint32(i + 1),
+			Width:     uint32(bounds.Dx()),
+			Height:    uint32(bounds.Dy()),
+			PositionX: uint32(bounds.Min.X),
+			PositionY: uint32(bounds.Min.Y),
+			Primary:   i == 0, // Assume first display is primary
+		}
 	}
 
 	return config, nil

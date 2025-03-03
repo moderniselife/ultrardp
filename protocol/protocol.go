@@ -105,8 +105,8 @@ type MonitorInfo struct {
 	ID        uint32
 	Width     uint32
 	Height    uint32
-	PositionX int32
-	PositionY int32
+	PositionX uint32
+	PositionY uint32
 	Primary   bool
 }
 
@@ -181,9 +181,9 @@ func DecodeMonitorConfig(data []byte) (*MonitorConfig, error) {
 		offset += 4
 		monitor.Height = binary.LittleEndian.Uint32(data[offset : offset+4])
 		offset += 4
-		monitor.PositionX = int32(binary.LittleEndian.Uint32(data[offset : offset+4]))
+		monitor.PositionX = binary.LittleEndian.Uint32(data[offset : offset+4])
 		offset += 4
-		monitor.PositionY = int32(binary.LittleEndian.Uint32(data[offset : offset+4]))
+		monitor.PositionY = binary.LittleEndian.Uint32(data[offset : offset+4])
 		offset += 4
 
 		// Decode boolean from byte

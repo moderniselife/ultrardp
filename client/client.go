@@ -2,12 +2,17 @@
 package client
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/jpeg"
 	"log"
 	"net"
 	"sync"
 	
 	"github.com/go-gl/glfw/v3.3/glfw"
+	"github.com/kbinani/screenshot"
 	"github.com/moderniselife/ultrardp/protocol"
 )
 
@@ -142,8 +147,8 @@ func (c *Client) createMonitorMapping() {
 		log.Printf("Mapped server monitor %d to local monitor %d", 
 			serverMonitor.ID, localMonitor.ID)
 		
-		// Initialize frame buffer for this monitor
-		c.frameBuffers[localMonitor.ID] = make([]byte, 0)
+		// Initialize frame buffer for this monitor with a reasonable initial size
+		c.frameBuffers[localMonitor.ID] = make([]byte, int(localMonitor.Width*localMonitor.Height*4)) // 4 bytes per pixel (RGBA)
 	}
 }
 
@@ -197,11 +202,22 @@ func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
         return
     }
     
-    // Store the frame data
-    c.frameBuffers[localMonitorID] = make([]byte, len(frameData))
-    copy(c.frameBuffers[localMonitorID], frameData)
+    // Decode JPEG frame data
+    img, err := jpeg.Decode(bytes.NewReader(frameData))
+    if err != nil {
+        log.Printf("Error decoding JPEG frame: %v", err)
+        return
+    }
+
+    // Convert to RGBA
+    bounds := img.Bounds()
+    rgba := image.NewRGBA(bounds)
+    draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+
+    // Store the RGBA pixel data
+    c.frameBuffers[localMonitorID] = rgba.Pix
     
-    log.Printf("Updated frame buffer for monitor %d with %d bytes", localMonitorID, len(frameData))
+    log.Printf("Updated frame buffer for monitor %d with %d bytes of RGBA data", localMonitorID, len(rgba.Pix))
 }
 
 // startDisplayLoop begins the display loop for rendering frames
@@ -262,23 +278,30 @@ func (c *Client) SendPing() error {
 
 // detectMonitors identifies the available monitors on the system
 func detectMonitors() (*protocol.MonitorConfig, error) {
-	// TODO: Implement platform-specific monitor detection
-	// This is a placeholder implementation
-	
-	// Create a dummy monitor configuration for testing
-	config := &protocol.MonitorConfig{
-		MonitorCount: 1,
-		Monitors: []protocol.MonitorInfo{
-			{
-				ID:        1,
-				Width:     1920,
-				Height:    1080,
-				PositionX: 0,
-				PositionY: 0,
-				Primary:   true,
-			},
-		},
+	// Get all active displays using screenshot package
+	displays := screenshot.NumActiveDisplays()
+	if displays < 1 {
+		return nil, fmt.Errorf("no active displays found")
 	}
-	
+
+	// Create monitor config
+	config := &protocol.MonitorConfig{
+		MonitorCount: uint32(displays),
+		Monitors:     make([]protocol.MonitorInfo, displays),
+	}
+
+	// Get information for each display
+	for i := 0; i < displays; i++ {
+		bounds := screenshot.GetDisplayBounds(i)
+		config.Monitors[i] = protocol.MonitorInfo{
+			ID:        uint32(i + 1),
+			Width:     uint32(bounds.Dx()),
+			Height:    uint32(bounds.Dy()),
+			PositionX: uint32(bounds.Min.X),
+			PositionY: uint32(bounds.Min.Y),
+			Primary:   i == 0, // Assume first display is primary
+		}
+	}
+
 	return config, nil
 }
