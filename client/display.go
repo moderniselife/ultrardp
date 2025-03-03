@@ -6,10 +6,10 @@ import (
 	"time"
 	"runtime"
 
-	"github.com/go-gl/gl/v2.1/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
+// We know from our test that GLFW works fine - simplifying to match our successful test
 // createWindows - simplified to create just one functional window first
 func (c *Client) createWindows() error {
 	// Just create a single window for now
@@ -45,64 +45,49 @@ func (c *Client) createWindows() error {
 // updateDisplayLoop handles the display loop for all monitors
 func (c *Client) updateDisplayLoop() {
 	// GLFW event handling must run on the main thread
+	fmt.Println("Locking OS thread for GLFW")
 	runtime.LockOSThread()
 	
+	fmt.Println("Trying to initialize GLFW")
 	// Initialize GLFW
 	if err := glfw.Init(); err != nil {
 		log.Printf("Failed to initialize GLFW: %v", err)
 		return
 	}
-	log.Printf("GLFW initialized successfully, version: %s", glfw.GetVersionString())
-
-	// Process events before window creation
-	glfw.PollEvents()
-	
+	fmt.Printf("GLFW initialized successfully, version: %s\n", glfw.GetVersionString())
 	defer glfw.Terminate()
 	
+	// Print info about monitors
+	monitors := glfw.GetMonitors()
+	fmt.Printf("Found %d monitors\n", len(monitors))
+	for i, monitor := range monitors {
+		x, y := monitor.GetPos()
+		w, h := monitor.GetVideoMode().Width, monitor.GetVideoMode().Height
+		fmt.Printf("Monitor %d: %s at (%d,%d) resolution %dx%d\n", 
+			i, monitor.GetName(), x, y, w, h)
+	}
+
 	// Create windows for each monitor
 	if err := c.createWindows(); err != nil {  
 		log.Printf("ERROR: %v", err)
 		return
 	}
 	
-	// Super simple - get the test window and make its context current
-	if len(c.windows) == 0 || c.windows[0] == nil {
-		log.Printf("No windows available for rendering")
-		return
-	}
+	fmt.Println("Starting main render loop")
 	
-	window := c.windows[0]
-	window.MakeContextCurrent()
-	
-	// Initialize OpenGL
-	if err := gl.Init(); err != nil {
-		log.Printf("Failed to initialize OpenGL: %v", err)
-		return
-	}
-	
-	log.Println("OpenGL initialized, beginning basic render loop")
-	
-	// Very simple render loop - just show a blue window
-	for !c.stopped && !window.ShouldClose() {
-		// Poll events
-		glfw.PollEvents()
-		
-		// Clear the window with blue to show it's working
-		gl.ClearColor(0.0, 0.0, 1.0, 1.0) // Blue
-		gl.Clear(gl.COLOR_BUFFER_BIT)
-		
-		// Swap buffers
-		window.SwapBuffers()
-            
-		// Slight delay to prevent high CPU usage
-		time.Sleep(16 * time.Millisecond) // ~60fps
+	// Simple window management loop
+	startTime := time.Now()
+	for !c.stopped && time.Since(startTime) < 60*time.Second {
+		glfw.PollEvents() // Keep UI responsive
+		time.Sleep(100 * time.Millisecond)
 	}
 
-	log.Println("Display loop terminated")
-	
-	// Clean up
+	fmt.Println("Display loop terminated")
+		
+	// Clean up windows
 	for _, w := range c.windows {
 		if w != nil {
+			fmt.Println("Destroying window")
 			w.Destroy()
 		}
 	}
