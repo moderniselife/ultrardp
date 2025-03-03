@@ -3,6 +3,7 @@ package client
 
 import (
 	"fmt"
+	"time"
 	"log"
 	"net"
 	"sync"
@@ -57,6 +58,7 @@ func (c *Client) Start() error {
 	log.Println("Client started, detected", c.localMonitors.MonitorCount, "local monitors")
 	
 	// Handle initial handshake
+	log.Println("Performing handshake with server...")
 	if err := c.handleHandshake(); err != nil {
 		return fmt.Errorf("handshake failed: %w", err)
 	}
@@ -64,9 +66,17 @@ func (c *Client) Start() error {
 	// Start input capture in a goroutine
 	go c.startInputCapture()
 	
+	// Allow a brief moment for server connection to establish
+	time.Sleep(200 * time.Millisecond)
+	
 	// Start packet receiving loop in a goroutine
+	log.Println("Starting packet receiving loop...")
+	
 	go func() {
 		for !c.stopped {
+			// Skip if connection closed
+			if c.conn == nil { break }
+			
 			packet, err := protocol.DecodePacket(c.conn)
 			if err != nil {
 				if !c.stopped {
@@ -78,12 +88,13 @@ func (c *Client) Start() error {
 		}
 	}()
 	
-	// Initialize GLFW in the main thread
+	// Display must run on the main thread because of GLFW requirements
 	runtime.LockOSThread()
-	if err := glfw.Init(); err != nil {
-		return fmt.Errorf("failed to initialize GLFW: %w", err)
-	}
+	log.Println("Main thread locked for GLFW operations")
 	
+	// Initialize GLFW - this is done in updateDisplayLoop so no need here
+	
+	// Start display loop - this function is blocking and will return only when the client stops
 	// Start display loop
 	c.updateDisplayLoop()
 	
@@ -153,6 +164,7 @@ func (c *Client) createMonitorMapping() {
 		// Initialize frame buffer for this monitor with a reasonable initial size
 		c.frameBuffers[localMonitor.ID] = make([]byte, int(localMonitor.Width*localMonitor.Height*4)) // 4 bytes per pixel (RGBA)
 	}
+	log.Printf("Created %d monitor mappings", len(c.monitorMap))
 }
 
 // handlePacket processes an incoming packet from the server
@@ -166,15 +178,16 @@ func (c *Client) handlePacket(packet *protocol.Packet) {
         }
         
         // First 4 bytes contain the monitor ID
-        monitorID := protocol.BytesToUint32(packet.Payload[0:4])
+        serverMonitorID := protocol.BytesToUint32(packet.Payload[0:4])
         frameData := packet.Payload[4:]
         
         // Update frame buffer for this monitor
-        c.updateFrameBuffer(monitorID, frameData)
+        c.updateFrameBuffer(serverMonitorID, frameData)
         
     case protocol.PacketTypeAudioFrame:
         // Process audio frame
-        // TODO: Implement audio playback
+        log.Println("Received audio frame packet (not yet implemented)")
+        return
         
     case protocol.PacketTypePong:
         // Process pong response (for latency measurement)
@@ -182,6 +195,7 @@ func (c *Client) handlePacket(packet *protocol.Packet) {
         
     case protocol.PacketTypeMonitorConfig:
         // Server is sending an updated monitor configuration
+        log.Println("Received updated monitor configuration from server")
         serverMonitors, err := protocol.DecodeMonitorConfig(packet.Payload)
         if err != nil {
             log.Println("Error decoding server monitor config:", err)
@@ -196,7 +210,6 @@ func (c *Client) handlePacket(packet *protocol.Packet) {
 // updateFrameBuffer updates the frame buffer for a specific monitor
 func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
     c.frameMutex.Lock()
-    defer c.frameMutex.Unlock()
     
     // Map server monitor ID to local monitor ID
     localMonitorID, ok := c.monitorMap[serverMonitorID]
@@ -207,13 +220,16 @@ func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
     
     // Validate JPEG header (SOI marker: FF D8)
     if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
+        // Unlock mutex before returning
+        c.frameMutex.Unlock()
         log.Printf("Invalid JPEG data received: missing SOI marker")
         return
     }
     
     // Store the raw JPEG data for rendering later
     c.frameBuffers[localMonitorID] = frameData
-    log.Printf("Updated frame buffer for monitor %d with %d bytes of JPEG data", localMonitorID, len(frameData))
+    c.frameMutex.Unlock()
+    log.Printf("Updated frame buffer for monitor %d (server ID: %d) with %d bytes of JPEG data", localMonitorID, serverMonitorID, len(frameData))
 }
 
 
