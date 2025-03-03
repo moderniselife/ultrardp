@@ -2,11 +2,7 @@
 package client
 
 import (
-	"bytes"
 	"fmt"
-	"image"
-	"image/draw"
-	"image/jpeg"
 	"log"
 	"net"
 	"sync"
@@ -209,22 +205,15 @@ func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
         return
     }
     
-    // Decode JPEG frame data
-    img, err := jpeg.Decode(bytes.NewReader(frameData))
-    if err != nil {
-        log.Printf("Error decoding JPEG frame: %v", err)
+    // Validate JPEG header (SOI marker: FF D8)
+    if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
+        log.Printf("Invalid JPEG data received: missing SOI marker")
         return
     }
-
-    // Convert to RGBA
-    bounds := img.Bounds()
-    rgba := image.NewRGBA(bounds)
-    draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
-
-    // Store the RGBA pixel data
-    c.frameBuffers[localMonitorID] = rgba.Pix
     
-    log.Printf("Updated frame buffer for monitor %d with %d bytes of RGBA data", localMonitorID, len(rgba.Pix))
+    // Store the raw JPEG data for rendering later
+    c.frameBuffers[localMonitorID] = frameData
+    log.Printf("Updated frame buffer for monitor %d with %d bytes of JPEG data", localMonitorID, len(frameData))
 }
 
 

@@ -211,7 +211,18 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
         return
     }
 
-    // Decode JPEG frame data
+    // Validate JPEG format (check for SOI marker)
+    if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
+        log.Printf("Error: Invalid JPEG format in renderFrame: missing SOI marker")
+        // Clear window if frame data is invalid
+        gl.ClearColor(0.0, 0.0, 0.0, 1.0)
+        gl.Clear(gl.COLOR_BUFFER_BIT)
+        window.SwapBuffers()
+        return
+    }
+
+    // Decode JPEG frame data - note that frameData is now raw JPEG data from the server
+    // We no longer decode in updateFrameBuffer, only in renderFrame
     img, err := jpeg.Decode(bytes.NewReader(frameData))
     if err != nil {
         log.Printf("Error decoding JPEG frame: %v", err)
