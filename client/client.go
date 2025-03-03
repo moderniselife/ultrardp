@@ -59,25 +59,11 @@ func (c *Client) Start() error {
 		return fmt.Errorf("handshake failed: %w", err)
 	}
 	
-	// Start display loop
-	go c.startDisplayLoop()
-	
-	// Start input capture
+	// Start input capture in a goroutine
 	go c.startInputCapture()
 	
-	// Main packet handling loop
-	for !c.stopped {
-		packet, err := protocol.DecodePacket(c.conn)
-		if err != nil {
-			if c.stopped {
-				break
-			}
-			log.Println("Error reading packet:", err)
-			return err
-		}
-		
-		c.handlePacket(packet)
-	}
+	// Start display loop on main thread
+	c.startDisplayLoop()
 	
 	return nil
 }
@@ -204,7 +190,7 @@ func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
 
 // startDisplayLoop begins the display loop for rendering frames
 func (c *Client) startDisplayLoop() {
-	go c.updateDisplayLoop()
+	c.updateDisplayLoop()
 }
 
 // startInputCapture begins capturing user input
