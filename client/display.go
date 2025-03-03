@@ -11,59 +11,65 @@ import (
 
 // We know from our test that GLFW works fine - simplifying to match our successful test
 // createWindows - simplified to create just one functional window first
-func (c *Client) createWindows() error {
-	// Set exactly the same window hints that worked in our test program
-	glfw.DefaultWindowHints()
-	glfw.WindowHint(glfw.Visible, glfw.True)
-	glfw.WindowHint(glfw.Decorated, glfw.True)
-	glfw.WindowHint(glfw.Resizable, glfw.False)
+func (c *Client) createWindows() error {	
+	// Get information about available monitors directly from GLFW
+	monitors := glfw.GetMonitors()
+	fmt.Fprintf(os.Stdout, "Found %d GLFW monitors\n", len(monitors))
 	
-	// Initialize windows slice
-	c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
+	// Print detailed monitor info
+	for i, monitor := range monitors {
+		x, y := monitor.GetPos()
+		mode := monitor.GetVideoMode()
+		fmt.Fprintf(os.Stdout, "Monitor %d: %s at (%d,%d) resolution %dx%d\n", 
+			i, monitor.GetName(), x, y, mode.Width, mode.Height)
+	}
 	
-	// Create one window per monitor
-	for i := uint32(0); i < c.localMonitors.MonitorCount; i++ {
-		monitor := c.localMonitors.Monitors[i]
-		fmt.Printf("Creating window for monitor %d\n", monitor.ID)
+	// Initialize windows slice based on actual GLFW monitor count
+	// This is key - use GLFW's monitor count, not our stored configuration
+	c.windows = make([]*glfw.Window, len(monitors))
+	
+	// Create a window for each actual monitor
+	for i, monitor := range monitors {
+		fmt.Fprintf(os.Stdout, "Creating window %d for monitor\n", i)
 		
-		// Create window with same pattern as test program
+		// Exact same window hints as our successful test
+		glfw.DefaultWindowHints()
+		glfw.WindowHint(glfw.Visible, glfw.True)
+		glfw.WindowHint(glfw.Decorated, glfw.True)
+		glfw.WindowHint(glfw.Resizable, glfw.False)
+		
+		// Get monitor position and size
+		x, y := monitor.GetPos()
+		mode := monitor.GetVideoMode()
+		
+		// Use a fixed size for now, smaller than the monitor
+		width := 800
+		height := 600
+		
+		// Create window - same exact pattern as our test program
 		window, err := glfw.CreateWindow(
-			640, 480, 
-			fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
+			width, height,
+			fmt.Sprintf("UltraRDP - Monitor %d", i),
 			nil, nil)
 		
 		if err != nil {
-			fmt.Printf("ERROR: Failed to create window: %v\n", err)
+			fmt.Fprintf(os.Stdout, "Failed to create window for monitor %d: %v\n", i, err)
 			continue
 		}
 		
-		// Position based on monitor position
-		window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
+		// Position window centrally on the monitor (like our test)
+		window.SetPos(x + (mode.Width - width) / 2, y + (mode.Height - height) / 2)
 		window.Show()
 		
 		c.windows[i] = window
-		fmt.Printf("Window %d created successfully\n", i+1)
+		fmt.Fprintf(os.Stdout, "Window %d created successfully\n", i)
 		
 		// Process events after each window creation
 		glfw.PollEvents()
+		
+		// CRITICAL: Add a short delay between window creations
+		time.Sleep(100 * time.Millisecond)
 	}
-	
-	// Check if we created any windows
-	windowCount := 0
-	for _, w := range c.windows {
-		if w != nil {
-			windowCount++
-		}
-	}
-	
-	if windowCount == 0 {
-		return fmt.Errorf("failed to create any windows")
-	}
-	
-	fmt.Printf("Created %d windows successfully\n", windowCount)
-	
-	// Process events to ensure windows are visible
-	glfw.PollEvents()
 	
 	return nil
 }
@@ -78,23 +84,16 @@ func (c *Client) updateDisplayLoop() {
 
 	// Initialize GLFW
 	if err := glfw.Init(); err != nil {
-		fmt.Printf("Failed to initialize GLFW: %v\n", err)
+		fmt.Fprintf(os.Stdout, "Failed to initialize GLFW: %v\n", err)
 		return
 	}
 	fmt.Fprintf(os.Stdout, "GLFW initialized successfully, version: %s\n", glfw.GetVersionString())
 	defer glfw.Terminate()
 	
-	// Print info about monitors
-	monitors := glfw.GetMonitors()
-	fmt.Fprintf(os.Stdout, "Found %d GLFW monitors\n", len(monitors))
-	for i, monitor := range monitors {
-		x, y := monitor.GetPos()
-		w, h := monitor.GetVideoMode().Width, monitor.GetVideoMode().Height
-		fmt.Fprintf(os.Stdout, "Monitor %d: %s at (%d,%d) resolution %dx%d\n", 
-			i, monitor.GetName(), x, y, w, h)
-	}
+	// Process events before window creation
+	glfw.PollEvents()
 	
-	// Create windows for each monitor
+	// Create windows
 	fmt.Fprintln(os.Stdout, "Creating windows...")
 	if err := c.createWindows(); err != nil {
 		fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
@@ -123,7 +122,7 @@ func (c *Client) updateDisplayLoop() {
 		}
 		
 		// Sleep to avoid high CPU usage
-		time.Sleep(16 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	
 	fmt.Fprintln(os.Stdout, "Display loop terminated")
