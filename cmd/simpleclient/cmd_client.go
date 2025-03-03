@@ -40,7 +40,7 @@ func main() {
 
 	// Parse command line arguments
 	
-	serverAddr := "localhost:8000"
+	serverAddr := "macbook.tail85acc2.ts.net:8000"
 	if len(os.Args) > 1 {
 		serverAddr = os.Args[1]
 	}
