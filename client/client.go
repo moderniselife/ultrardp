@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"runtime"
 	
 	"github.com/go-gl/glfw/v3.3/glfw"
 	"github.com/kbinani/screenshot"
@@ -222,6 +223,10 @@ func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
 
 // startDisplayLoop begins the display loop for rendering frames
 func (c *Client) startDisplayLoop() {
+	// Initialize GLFW in the main thread
+	runtime.LockOSThread()
+
+	// Call the display loop
 	c.updateDisplayLoop()
 }
 
