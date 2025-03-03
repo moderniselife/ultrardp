@@ -177,6 +177,13 @@ func main() {
 			if exists && len(frameData) > 0 {
 				// Make this window's context current
 				window.MakeContextCurrent()
+				
+				// Ensure texture exists for this window
+				if _, ok := client.textures[i]; !ok {
+					fmt.Printf("Creating missing texture for window %d\n", i)
+					client.textures[i] = client.initializeTexture()
+				}
+				
 				fmt.Printf("Rendering frame for monitor %d to window %d (%d bytes)\n", 
 					serverMonitorID, i, len(frameData))
 				
@@ -194,6 +201,10 @@ func main() {
 				fmt.Printf("No frame data for window %d (server monitor %d)\n", i, serverMonitorID)
 				gl.ClearColor(0.1, 0.1, 0.1, 1.0) // Dark gray
 				gl.Clear(gl.COLOR_BUFFER_BIT)
+				
+				// Draw test pattern instead of blank screen
+				drawDiagnosticPattern()
+				
 				window.SwapBuffers()
 			}
 		}
@@ -348,13 +359,14 @@ func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
 	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 	fmt.Printf("Converted to RGBA, pixel buffer size: %d bytes\n", len(rgba.Pix))
 	
-	// Get the texture for this window
+	// Get or create the texture for this window
 	texture, ok := c.textures[windowIndex]
 	if !ok {
-		return fmt.Errorf("no texture found for window %d", windowIndex)
+		fmt.Printf("No texture found for window %d, creating one\n", windowIndex)
+		texture = c.initializeTexture()
+		c.textures[windowIndex] = texture
 	}
-	fmt.Printf("Using texture ID %d for window %d\n", texture, windowIndex)
-	
+
 	// Ensure we have the correct window context
 	window := c.windows[windowIndex]
 	if window == nil {
@@ -362,14 +374,8 @@ func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
 	}
 	window.MakeContextCurrent()
 	
-	// Clear to a bright color to ensure we're drawing
-	gl.ClearColor(1.0, 0.0, 0.0, 1.0) // Bright red
-	gl.Clear(gl.COLOR_BUFFER_BIT)
-	
 	// Try rendering a test pattern first to verify OpenGL is working
-	if windowIndex % 2 == 0 { // Alternate between pattern and texture for testing
-		fmt.Println("Drawing diagnostic pattern to verify OpenGL works...")
-		drawDiagnosticPattern()
+	if false { // Disabled for now as we know the test pattern works
 		window.SwapBuffers()
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -384,10 +390,17 @@ func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
 		fmt.Printf("OpenGL error before texture update: 0x%x\n", glErr)
 	}
 	
+	// Clear to background color based on window index
+	switch windowIndex {
+	case 0: gl.ClearColor(0.2, 0.0, 0.0, 1.0) // Dark red for window 0
+	case 1: gl.ClearColor(0.0, 0.2, 0.0, 1.0) // Dark green for window 1
+	case 2: gl.ClearColor(0.0, 0.0, 0.2, 1.0) // Dark blue for window 2
+	}
+	gl.Clear(gl.COLOR_BUFFER_BIT)
+	
 	fmt.Println("Updating texture...")
 	// Update texture with image data using the mapped texture
-	gl.BindTexture(gl.TEXTURE_2D, c.textures[windowIndex])
-	
+	gl.BindTexture(gl.TEXTURE_2D, texture)
 	// Check errors after binding
 	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
 		fmt.Printf("OpenGL error after texture bind: 0x%x\n", glErr)
@@ -396,7 +409,12 @@ func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
 	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, int32(bounds.Dx()), int32(bounds.Dy()), 0, gl.RGBA, gl.UNSIGNED_BYTE, gl.Ptr(rgba.Pix))
 	
 	// Pass the specific texture ID to the draw function
-	drawTexturedQuad(c.textures[windowIndex])
+	drawTexturedQuad(texture)
+	
+	// Check for errors after rendering
+	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
+		fmt.Printf("OpenGL error after rendering: 0x%x\n", glErr)
+	}
 	
 	return nil
 }
@@ -586,20 +604,23 @@ func (c *SimpleClient) handleVideoFrame(payload []byte) {
 func drawTexturedQuad(textureID uint32) {
 	// Reset any error flags
 	gl.GetError()
+
+	fmt.Printf("Drawing textured quad with texture ID: %d\n", textureID)
 	
 	// Set up orthographic projection
 	gl.MatrixMode(gl.PROJECTION)
 	gl.LoadIdentity()
-	gl.Ortho(0, 1, 0, 1, -1, 1)
+	gl.Ortho(0, 1, 1, 0, -1, 1)  // Y-flipped to match texture coordinates
 	
 	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
 		fmt.Printf("OpenGL error after projection: 0x%x\n", glErr)
 	}
 	
+	gl.LoadIdentity()
 	gl.MatrixMode(gl.MODELVIEW)
 	gl.LoadIdentity()
 	
-	// Make sure texturing is enabled
+	// Enable texturing
 	gl.Enable(gl.TEXTURE_2D)
 	
 	// Bind the provided texture
@@ -619,10 +640,10 @@ func drawTexturedQuad(textureID uint32) {
 
 	// Draw textured quad with the texture coordinates set properly
 	gl.Begin(gl.QUADS)
-	gl.TexCoord2f(0.0, 0.0); gl.Vertex2f(0.0, 0.0) // Bottom-left
-	gl.TexCoord2f(1.0, 0.0); gl.Vertex2f(1.0, 0.0) // Bottom-right
-	gl.TexCoord2f(1.0, 1.0); gl.Vertex2f(1.0, 1.0) // Top-right
-	gl.TexCoord2f(0.0, 1.0); gl.Vertex2f(0.0, 1.0) // Top-left
+	gl.TexCoord2f(0.0, 0.0); gl.Vertex2f(0.0, 0.0) // Top-left
+	gl.TexCoord2f(1.0, 0.0); gl.Vertex2f(1.0, 0.0) // Top-right
+	gl.TexCoord2f(1.0, 1.0); gl.Vertex2f(1.0, 1.0) // Bottom-right
+	gl.TexCoord2f(0.0, 1.0); gl.Vertex2f(0.0, 1.0) // Bottom-left
 	gl.End()
 	
 	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
