@@ -125,8 +125,19 @@ func (s *Server) handleClient(conn net.Conn) {
 	
 	// Create new client instance
 	client := &Client{
-		conn:     conn,
-		monitors: clientMonitors,
+		conn:       conn,
+		monitors:   clientMonitors,
+		active:     true,
+		id:         conn.RemoteAddr().String(),
+		monitorMap: make(map[uint32]uint32),
+	}
+	
+	// Create monitor mapping
+	for i := uint32(0); i < s.monitors.MonitorCount && i < clientMonitors.MonitorCount; i++ {
+		serverMonitor := s.monitors.Monitors[i]
+		clientMonitor := clientMonitors.Monitors[i]
+		client.monitorMap[serverMonitor.ID] = clientMonitor.ID
+		log.Printf("Mapped server monitor %d to client monitor %d", serverMonitor.ID, clientMonitor.ID)
 	}
 	
 	// Add client to server's client list
