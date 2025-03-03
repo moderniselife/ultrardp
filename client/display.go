@@ -16,7 +16,7 @@ import (
 // createWindows creates GLFW windows for each mapped monitor
 func (c *Client) createWindows() error {
 	// Initialize windows slice
-	c.windows = make([]*glfw.Window, len(c.monitorMap))
+	c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
 
 	// Get GLFW monitors
 	monitors := glfw.GetMonitors()
@@ -33,7 +33,8 @@ func (c *Client) createWindows() error {
 	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
 
 	// Create a window for each monitor
-	for i, monitor := range c.localMonitors.Monitors {
+	for i := uint32(0); i < c.localMonitors.MonitorCount; i++ {
+		monitor := c.localMonitors.Monitors[i]
 		// Create window
 		window, err := glfw.CreateWindow(
 			int(monitor.Width),
@@ -63,11 +64,7 @@ func (c *Client) updateDisplayLoop() {
     // GLFW event handling must run on the main thread
     runtime.LockOSThread()
 
-    // Initialize GLFW
-    if err := glfw.Init(); err != nil {
-        log.Printf("Failed to initialize GLFW: %v", err)
-        return
-    }
+    // GLFW is already initialized in Start()
     defer glfw.Terminate()
 
     // Create windows for each mapped monitor

@@ -82,8 +82,14 @@ func (c *Client) Start() error {
 		}
 	}()
 	
-	// Start display loop on main thread
-	c.startDisplayLoop()
+	// Initialize GLFW in the main thread
+	runtime.LockOSThread()
+	if err := glfw.Init(); err != nil {
+		return fmt.Errorf("failed to initialize GLFW: %w", err)
+	}
+	
+	// Start display loop
+	c.updateDisplayLoop()
 	
 	return nil
 }
@@ -221,14 +227,7 @@ func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
     log.Printf("Updated frame buffer for monitor %d with %d bytes of RGBA data", localMonitorID, len(rgba.Pix))
 }
 
-// startDisplayLoop begins the display loop for rendering frames
-func (c *Client) startDisplayLoop() {
-	// Initialize GLFW in the main thread
-	runtime.LockOSThread()
 
-	// Call the display loop
-	c.updateDisplayLoop()
-}
 
 // startInputCapture begins capturing user input
 func (c *Client) startInputCapture() {
