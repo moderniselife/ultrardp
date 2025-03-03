@@ -9,7 +9,7 @@ import (
 	"log"
 	"runtime"
 
-	"github.com/go-gl/gl/v4.1-core/gl"
+	"github.com/go-gl/gl/v3.3-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
@@ -18,6 +18,7 @@ func (c *Client) createWindows() error {
 	// Initialize windows slice
 	c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
 
+    log.Printf("Attempting to create %d windows for monitors", c.localMonitors.MonitorCount)
 	// Get GLFW monitors
 	monitors := glfw.GetMonitors()
 	if len(monitors) == 0 {
@@ -25,22 +26,43 @@ func (c *Client) createWindows() error {
 	}
 
 	// Set window hints
+    log.Printf("GLFW version: %s", glfw.GetVersionString())
+    log.Printf("Setting up window hints for %d GLFW monitors detected", len(monitors))
+    
+    // Reset window hints to default
+    glfw.DefaultWindowHints()
+    
+    // Configure window properties
 	glfw.WindowHint(glfw.Resizable, glfw.False)
 	glfw.WindowHint(glfw.Decorated, glfw.False) // Borderless
-	glfw.WindowHint(glfw.ContextVersionMajor, 4)
-	glfw.WindowHint(glfw.ContextVersionMinor, 1)
+    // Use OpenGL 3.3 instead of 4.1 for better compatibility
+	glfw.WindowHint(glfw.ContextVersionMajor, 3)
+	glfw.WindowHint(glfw.ContextVersionMinor, 3)
 	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
 	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
 
 	// Create a window for each monitor
 	for i := uint32(0); i < c.localMonitors.MonitorCount; i++ {
 		monitor := c.localMonitors.Monitors[i]
-		// Create window
+		
+		// Ensure we don't go out of bounds with monitors array
+		var glfwMonitor *glfw.Monitor
+		if int(i) < len(monitors) {
+			glfwMonitor = monitors[i]
+			log.Printf("Using GLFW monitor %d for local monitor %d", i, monitor.ID)
+		} else {
+			log.Printf("Warning: No matching GLFW monitor for local monitor %d, using nil", monitor.ID)
+			glfwMonitor = nil // Use default monitor if no matching GLFW monitor
+		}
+		
+		log.Printf("Creating window for monitor %d (%dx%d at %d,%d)", 
+			monitor.ID, monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY)
+		
 		window, err := glfw.CreateWindow(
 			int(monitor.Width),
 			int(monitor.Height),
 			"UltraRDP",
-			monitors[i], // Use corresponding GLFW monitor
+			glfwMonitor, // Use GLFW monitor if available
 			nil,
 		)
 		if err != nil {
@@ -70,7 +92,11 @@ func (c *Client) updateDisplayLoop() {
     // Create windows for each mapped monitor
     if err := c.createWindows(); err != nil {
         log.Printf("Failed to create windows: %v", err)
-        return
+        // Continue despite errors to see if we get more diagnostic information
+        // The normal return statement was here, but we'll continue execution to get more diagnostic logs
+        // Removed: return
+        log.Printf("GLFW monitors available: %d", len(glfw.GetMonitors()))
+        log.Printf("Local monitors configured: %d", c.localMonitors.MonitorCount)
     }
 
     // Initialize OpenGL for each window and create resources
@@ -79,10 +105,23 @@ func (c *Client) updateDisplayLoop() {
     shaderPrograms := make([]uint32, len(c.windows))
 
     for i, window := range c.windows {
+        if window == nil {
+            log.Printf("Warning: Window %d is nil, skipping OpenGL initialization", i)
+            continue
+        }
+        
+        log.Printf("Making context current for window %d", i)
         window.MakeContextCurrent()
         if err := gl.Init(); err != nil {
-            log.Printf("Failed to initialize OpenGL: %v", err)
-            return
+            log.Printf("Failed to initialize OpenGL 3.3 for window %d: %v", i, err)
+            
+            // Try with more compatible OpenGL version
+            window.MakeContextCurrent()
+            glfw.DefaultWindowHints()
+            glfw.WindowHint(glfw.ContextVersionMajor, 2)
+            glfw.WindowHint(glfw.ContextVersionMinor, 1)
+            log.Printf("Attempting fallback to OpenGL 2.1 for better compatibility")
+            continue // Skip this window and try the next one
         }
 
         // Create and bind texture
@@ -122,7 +161,7 @@ func (c *Client) updateDisplayLoop() {
         // Create and compile shaders
         vertexShader := gl.CreateShader(gl.VERTEX_SHADER)
         vertexSource := `
-            #version 410
+            #version 330
             layout (location = 0) in vec2 position;
             layout (location = 1) in vec2 texCoord;
             out vec2 TexCoord;
@@ -138,7 +177,7 @@ func (c *Client) updateDisplayLoop() {
 
         fragmentShader := gl.CreateShader(gl.FRAGMENT_SHADER)
         fragmentSource := `
-            #version 410
+            #version 330
             in vec2 TexCoord;
             out vec4 FragColor;
             uniform sampler2D texture1;
@@ -166,24 +205,37 @@ func (c *Client) updateDisplayLoop() {
     // Main display loop
     for !c.stopped {
         c.frameMutex.Lock()
-        for i, window := range c.windows {
+        for i, window := range c.windows {            
+            // Skip nil windows
+            if window == nil {
+                continue
+            }
+            
+            // Check if window should close
             if window.ShouldClose() {
                 c.Stop()
                 break
             }
 
-            // Make this window's context current
-            window.MakeContextCurrent()
-
-            // Get the frame buffer for this monitor
+            // Get the monitor ID for this window
+            if i >= int(c.localMonitors.MonitorCount) {
+                log.Printf("Warning: Window index %d exceeds monitor count %d", i, c.localMonitors.MonitorCount)
+                continue
+            }
             monitorID := c.localMonitors.Monitors[i].ID
-            frameData := c.frameBuffers[monitorID]
-
-            // Render the frame using the corresponding resources
+            
+            // Check if we have frame data for this monitor
+            frameData, exists := c.frameBuffers[monitorID]
+            if !exists || len(frameData) == 0 {
+                continue // Skip rendering if no frame data
+            }
+            
+            // Make context current and render
+            window.MakeContextCurrent()
             c.renderFrame(window, frameData, textures[i], vaos[i], shaderPrograms[i])
         }
         c.frameMutex.Unlock()
-
+        
         // Process events
         glfw.PollEvents()
     }
@@ -210,6 +262,8 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
         window.SwapBuffers()
         return
     }
+    
+    log.Printf("Rendering frame with %d bytes of data", len(frameData))
 
     // Validate JPEG format (check for SOI marker)
     if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
