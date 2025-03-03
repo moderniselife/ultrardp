@@ -23,6 +23,7 @@ type Client struct {
 	conn       net.Conn
 	active     bool
 	monitorMap map[uint32]uint32
+	monitors   *protocol.MonitorConfig
 }
 
 // NewServer creates a new UltraRDP server
@@ -88,7 +89,52 @@ func (s *Server) Stop() {
 
 // handleClient processes a client connection
 func (s *Server) handleClient(conn net.Conn) {
-	// TODO: Implement client handshake and communication
+	// Send our monitor configuration to the client
+	monitorData := protocol.EncodeMonitorConfig(s.monitors)
+	handshakePacket := protocol.NewPacket(protocol.PacketTypeHandshake, monitorData)
+	
+	if err := protocol.EncodePacket(conn, handshakePacket); err != nil {
+		log.Printf("Failed to send handshake packet: %v", err)
+		conn.Close()
+		return
+	}
+	
+	// Receive client's monitor configuration
+	packet, err := protocol.DecodePacket(conn)
+	if err != nil {
+		log.Printf("Failed to receive client monitor config: %v", err)
+		conn.Close()
+		return
+	}
+	
+	if packet.Type != protocol.PacketTypeMonitorConfig {
+		log.Printf("Expected monitor config packet, got %d", packet.Type)
+		conn.Close()
+		return
+	}
+	
+	// Decode client monitor configuration
+	clientMonitors, err := protocol.DecodeMonitorConfig(packet.Payload)
+	if err != nil {
+		log.Printf("Failed to decode client monitor config: %v", err)
+		conn.Close()
+		return
+	}
+	
+	// Create new client instance
+	client := &Client{
+		conn:     conn,
+		monitors: clientMonitors,
+	}
+	
+	// Add client to server's client list
+	s.clientsMutex.Lock()
+	s.clients[conn.RemoteAddr().String()] = client
+	s.clientsMutex.Unlock()
+	
+	log.Printf("Client connected from %s with %d monitors", conn.RemoteAddr(), clientMonitors.MonitorCount)
+	
+	// TODO: Start handling client communication (streaming, input, etc.)
 }
 
 // detectMonitors identifies the available monitors on the system
