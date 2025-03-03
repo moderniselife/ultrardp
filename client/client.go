@@ -62,6 +62,20 @@ func (c *Client) Start() error {
 	// Start input capture in a goroutine
 	go c.startInputCapture()
 	
+	// Start packet receiving loop in a goroutine
+	go func() {
+		for !c.stopped {
+			packet, err := protocol.DecodePacket(c.conn)
+			if err != nil {
+				if !c.stopped {
+					log.Printf("Error receiving packet: %v", err)
+				}
+				break
+			}
+			c.handlePacket(packet)
+		}
+	}()
+	
 	// Start display loop on main thread
 	c.startDisplayLoop()
 	
@@ -135,57 +149,59 @@ func (c *Client) createMonitorMapping() {
 
 // handlePacket processes an incoming packet from the server
 func (c *Client) handlePacket(packet *protocol.Packet) {
-	switch packet.Type {
-	case protocol.PacketTypeVideoFrame:
-		// Process video frame
-		if len(packet.Payload) < 4 {
-			log.Println("Invalid video frame packet")
-			return
-		}
-		
-		// First 4 bytes contain the monitor ID
-		monitorID := protocol.BytesToUint32(packet.Payload[0:4])
-		frameData := packet.Payload[4:]
-		
-		// Update frame buffer for this monitor
-		c.updateFrameBuffer(monitorID, frameData)
-		
-	case protocol.PacketTypeAudioFrame:
-		// Process audio frame
-		// TODO: Implement audio playback
-		
-	case protocol.PacketTypePong:
-		// Process pong response (for latency measurement)
-		// TODO: Calculate and display latency
-		
-	case protocol.PacketTypeMonitorConfig:
-		// Server is sending an updated monitor configuration
-		serverMonitors, err := protocol.DecodeMonitorConfig(packet.Payload)
-		if err != nil {
-			log.Println("Error decoding server monitor config:", err)
-			return
-		}
-		
-		c.serverMonitors = serverMonitors
-		c.createMonitorMapping()
-	}
+    switch packet.Type {
+    case protocol.PacketTypeVideoFrame:
+        // Process video frame
+        if len(packet.Payload) < 4 {
+            log.Println("Invalid video frame packet")
+            return
+        }
+        
+        // First 4 bytes contain the monitor ID
+        monitorID := protocol.BytesToUint32(packet.Payload[0:4])
+        frameData := packet.Payload[4:]
+        
+        // Update frame buffer for this monitor
+        c.updateFrameBuffer(monitorID, frameData)
+        
+    case protocol.PacketTypeAudioFrame:
+        // Process audio frame
+        // TODO: Implement audio playback
+        
+    case protocol.PacketTypePong:
+        // Process pong response (for latency measurement)
+        // TODO: Calculate and display latency
+        
+    case protocol.PacketTypeMonitorConfig:
+        // Server is sending an updated monitor configuration
+        serverMonitors, err := protocol.DecodeMonitorConfig(packet.Payload)
+        if err != nil {
+            log.Println("Error decoding server monitor config:", err)
+            return
+        }
+        
+        c.serverMonitors = serverMonitors
+        c.createMonitorMapping()
+    }
 }
 
 // updateFrameBuffer updates the frame buffer for a specific monitor
 func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
-	c.frameMutex.Lock()
-	defer c.frameMutex.Unlock()
-	
-	// Map server monitor ID to local monitor ID
-	localMonitorID, ok := c.monitorMap[serverMonitorID]
-	if !ok {
-		// No mapping for this monitor
-		return
-	}
-	
-	// TODO: Decode the frame (H.264/HEVC) using hardware acceleration
-	// For now, just store the raw frame data
-	c.frameBuffers[localMonitorID] = frameData
+    c.frameMutex.Lock()
+    defer c.frameMutex.Unlock()
+    
+    // Map server monitor ID to local monitor ID
+    localMonitorID, ok := c.monitorMap[serverMonitorID]
+    if !ok {
+        log.Printf("No mapping found for server monitor ID %d", serverMonitorID)
+        return
+    }
+    
+    // Store the frame data
+    c.frameBuffers[localMonitorID] = make([]byte, len(frameData))
+    copy(c.frameBuffers[localMonitorID], frameData)
+    
+    log.Printf("Updated frame buffer for monitor %d with %d bytes", localMonitorID, len(frameData))
 }
 
 // startDisplayLoop begins the display loop for rendering frames
