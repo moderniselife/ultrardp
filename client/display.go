@@ -9,7 +9,7 @@ import (
 	"log"
 	"runtime"
 
-	"github.com/go-gl/gl/v3.3-core/gl"
+	"github.com/go-gl/gl/v2.1/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
@@ -19,11 +19,10 @@ func (c *Client) createWindows() error {
     c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
     
     // Set window creation hints - keeping it very simple
-    glfw.DefaultWindowHints()
-    glfw.WindowHint(glfw.ContextVersionMajor, 3)
-    glfw.WindowHint(glfw.ContextVersionMinor, 3)
-    glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
-    glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
+    glfw.DefaultWindowHints()  
+    glfw.WindowHint(glfw.ContextVersionMajor, 2)
+    glfw.WindowHint(glfw.ContextVersionMinor, 1)
+    // Don't specify profile for OpenGL 2.1
     
     // Get available monitors
     monitors := glfw.GetMonitors()
@@ -147,86 +146,11 @@ func (c *Client) updateDisplayLoop() {
     gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 4*4, gl.PtrOffset(2*4))
     gl.EnableVertexAttribArray(1)
     
-    // Shader program
-    vertexShaderSource := `
-        #version 330 core
-        layout (location = 0) in vec2 aPos;
-        layout (location = 1) in vec2 aTexCoord;
-        out vec2 TexCoord;
-        void main() {
-            gl_Position = vec4(aPos, 0.0, 1.0);
-            TexCoord = aTexCoord;
-        }
-    `
-    fragmentShaderSource := `
-        #version 330 core
-        in vec2 TexCoord;
-        out vec4 FragColor;
-        uniform sampler2D texture1;
-        void main() {
-            FragColor = texture(texture1, TexCoord);
-        }
-    `
-    
-    // Compile vertex shader
-    vertexShader := gl.CreateShader(gl.VERTEX_SHADER)
-    csource, free := gl.Strs(vertexShaderSource)
-    gl.ShaderSource(vertexShader, 1, csource, nil)
-    free()
-    gl.CompileShader(vertexShader)
-    
-    // Check for vertex shader compilation errors
-    var success int32
-    gl.GetShaderiv(vertexShader, gl.COMPILE_STATUS, &success)
-    if success == gl.FALSE {
-        var logLength int32
-        gl.GetShaderiv(vertexShader, gl.INFO_LOG_LENGTH, &logLength)
-        logMessage := string(make([]byte, logLength+1))
-        gl.GetShaderInfoLog(vertexShader, logLength, nil, gl.Str(logMessage+"\x00"))
-        log.Printf("Vertex shader compilation failed: %s", logMessage)
-    }
-    
-    // Compile fragment shader
-    fragmentShader := gl.CreateShader(gl.FRAGMENT_SHADER)
-    csource, free = gl.Strs(fragmentShaderSource)
-    gl.ShaderSource(fragmentShader, 1, csource, nil)
-    free()
-    gl.CompileShader(fragmentShader)
-    
-    // Check for fragment shader compilation errors
-    gl.GetShaderiv(fragmentShader, gl.COMPILE_STATUS, &success)
-    if success == gl.FALSE {
-        var logLength int32
-        gl.GetShaderiv(fragmentShader, gl.INFO_LOG_LENGTH, &logLength)
-        logMessage := string(make([]byte, logLength+1))
-        gl.GetShaderInfoLog(fragmentShader, logLength, nil, gl.Str(logMessage+"\x00"))
-        log.Printf("Fragment shader compilation failed: %s", logMessage)
-    }
-    
-    // Link shaders
-    shaderProgram := gl.CreateProgram()
-    gl.AttachShader(shaderProgram, vertexShader)
-    gl.AttachShader(shaderProgram, fragmentShader)
-    gl.LinkProgram(shaderProgram)
-    
-    // Check for linking errors
-    gl.GetProgramiv(shaderProgram, gl.LINK_STATUS, &success)
-    if success == gl.FALSE {
-        var logLength int32
-        gl.GetProgramiv(shaderProgram, gl.INFO_LOG_LENGTH, &logLength)
-        logMessage := string(make([]byte, logLength+1))
-        gl.GetProgramInfoLog(shaderProgram, logLength, nil, gl.Str(logMessage+"\x00"))
-        log.Printf("Shader program linking failed: %s", logMessage)
-    }
-    
-    gl.DeleteShader(vertexShader)
-    gl.DeleteShader(fragmentShader)
-    
     // Main display loop
     for !c.stopped {
         // Poll events
         glfw.PollEvents()
-
+        
         // Update each window
         for i, window := range c.windows {
             if window == nil {
@@ -294,11 +218,38 @@ func (c *Client) updateDisplayLoop() {
             // Clear screen
             gl.ClearColor(0.0, 0.0, 0.0, 1.0)
             gl.Clear(gl.COLOR_BUFFER_BIT)
+
+            // Set up orthographic projection
+            gl.MatrixMode(gl.PROJECTION)
+            gl.LoadIdentity()
+            gl.Ortho(0, 1, 0, 1, -1, 1)
+
+            // Set up model view
+            gl.MatrixMode(gl.MODELVIEW)
+            gl.LoadIdentity()
+
+            // Enable texturing
+            gl.Enable(gl.TEXTURE_2D)
+            gl.BindTexture(gl.TEXTURE_2D, textures[i])
+
+            // Draw a textured quad
+            gl.Begin(gl.QUADS)
+            // Bottom left
+            gl.TexCoord2f(0, 0)
+            gl.Vertex2f(0, 0)
             
-            // Draw textured quad
-            gl.UseProgram(shaderProgram)
-            gl.BindVertexArray(vao)
-            gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, nil)
+            // Bottom right
+            gl.TexCoord2f(1, 0)
+            gl.Vertex2f(1, 0)
+            
+            // Top right
+            gl.TexCoord2f(1, 1)
+            gl.Vertex2f(1, 1)
+            
+            // Top left
+            gl.TexCoord2f(0, 1)
+            gl.Vertex2f(0, 1)
+            gl.End()
             
             // Swap buffers
             window.SwapBuffers()
@@ -309,7 +260,6 @@ func (c *Client) updateDisplayLoop() {
     gl.DeleteVertexArrays(1, &vao)
     gl.DeleteBuffers(1, &vbo)
     gl.DeleteBuffers(1, &ebo)
-    gl.DeleteProgram(shaderProgram)
     
     for i := range textures {
         if textures[i] != 0 {
