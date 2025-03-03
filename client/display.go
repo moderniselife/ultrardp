@@ -103,17 +103,115 @@ func (c *Client) createWindows() error {
 
 // renderFrame renders a frame to the specified window
 func (c *Client) renderFrame(window *glfw.Window, frameData []byte) {
-	// TODO: Implement frame rendering using OpenGL
-	// This would involve:
-	// 1. Creating and updating textures from decoded frame data
-	// 2. Using shaders to render the textures
-	// 3. Handling different pixel formats and color spaces
-	// 4. Implementing proper scaling and aspect ratio handling
+    if len(frameData) == 0 {
+        // Clear window if no frame data
+        gl.ClearColor(0.2, 0.3, 0.3, 1.0)
+        gl.Clear(gl.COLOR_BUFFER_BIT)
+        window.SwapBuffers()
+        return
+    }
 
-	// For now, just clear the window to indicate it's working
-	gl.ClearColor(0.2, 0.3, 0.3, 1.0)
-	gl.Clear(gl.COLOR_BUFFER_BIT)
+    // Create and bind texture if not exists
+    var texture uint32
+    gl.GenTextures(1, &texture)
+    gl.BindTexture(gl.TEXTURE_2D, texture)
+    defer gl.DeleteTextures(1, &texture)
 
-	// Swap buffers
-	window.SwapBuffers()
+    // Set texture parameters
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+
+    // Load frame data into texture
+    gl.TexImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGB,
+        1920, // TODO: Use actual monitor dimensions
+        1080,
+        0,
+        gl.RGB,
+        gl.UNSIGNED_BYTE,
+        gl.Ptr(frameData),
+    )
+
+    // Create vertex array object
+    var vao uint32
+    gl.GenVertexArrays(1, &vao)
+    gl.BindVertexArray(vao)
+    defer gl.DeleteVertexArrays(1, &vao)
+
+    // Create vertex buffer
+    vertices := []float32{
+        // Position   // Texture coords
+        -1.0, -1.0, 0.0, 0.0, // Bottom left
+        1.0, -1.0, 1.0, 0.0,  // Bottom right
+        -1.0, 1.0, 0.0, 1.0,  // Top left
+        1.0, 1.0, 1.0, 1.0,   // Top right
+    }
+
+    var vbo uint32
+    gl.GenBuffers(1, &vbo)
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+    gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
+    defer gl.DeleteBuffers(1, &vbo)
+
+    // Set vertex attributes
+    gl.VertexAttribPointer(0, 2, gl.FLOAT, false, 4*4, gl.PtrOffset(0))
+    gl.EnableVertexAttribArray(0)
+    gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 4*4, gl.PtrOffset(2*4))
+    gl.EnableVertexAttribArray(1)
+
+    // Create and compile shaders
+    vertexShader := gl.CreateShader(gl.VERTEX_SHADER)
+    vertexSource := `
+        #version 410
+        layout (location = 0) in vec2 position;
+        layout (location = 1) in vec2 texCoord;
+        out vec2 TexCoord;
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+            TexCoord = texCoord;
+        }
+    `
+    csources, free := gl.Strs(vertexSource)
+    gl.ShaderSource(vertexShader, 1, csources, nil)
+    free()
+    gl.CompileShader(vertexShader)
+    defer gl.DeleteShader(vertexShader)
+
+    fragmentShader := gl.CreateShader(gl.FRAGMENT_SHADER)
+    fragmentSource := `
+        #version 410
+        in vec2 TexCoord;
+        out vec4 FragColor;
+        uniform sampler2D texture1;
+        void main() {
+            FragColor = texture(texture1, TexCoord);
+        }
+    `
+    csources, free = gl.Strs(fragmentSource)
+    gl.ShaderSource(fragmentShader, 1, csources, nil)
+    free()
+    gl.CompileShader(fragmentShader)
+    defer gl.DeleteShader(fragmentShader)
+
+    // Create shader program
+    shaderProgram := gl.CreateProgram()
+    gl.AttachShader(shaderProgram, vertexShader)
+    gl.AttachShader(shaderProgram, fragmentShader)
+    gl.LinkProgram(shaderProgram)
+    gl.UseProgram(shaderProgram)
+    defer gl.DeleteProgram(shaderProgram)
+
+    // Clear and render
+    gl.ClearColor(0.0, 0.0, 0.0, 1.0)
+    gl.Clear(gl.COLOR_BUFFER_BIT)
+
+    // Draw quad
+    gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
+
+    // Swap buffers
+    window.SwapBuffers()
 }
