@@ -8,6 +8,7 @@ import (
 	"image/jpeg"
 	"log"
 	"runtime"
+	"time"
 
 	"github.com/go-gl/gl/v3.3-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
@@ -19,84 +20,147 @@ func (c *Client) createWindows() error {
 	c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
     var windowsCreated uint32 = 0
     
+    log.Printf("=== WINDOW CREATION START ===")
     log.Printf("Attempting to create %d windows for monitors", c.localMonitors.MonitorCount)
+	
 	// Get GLFW monitors
 	monitors := glfw.GetMonitors()
+	log.Printf("GLFW detected %d physical monitors", len(monitors))
 	if len(monitors) == 0 {
-		return fmt.Errorf("no monitors detected by GLFW")
+		log.Printf("WARNING: No monitors detected by GLFW, using windowed mode")
 	}
 
-	// Set window hints
+	// Set window hints using most compatible settings
     log.Printf("GLFW version: %s", glfw.GetVersionString())
-    log.Printf("Setting up window hints for %d GLFW monitors detected", len(monitors))
     
-    // Reset window hints to default
-    glfw.DefaultWindowHints()
-    
-    // Configure window properties
-	glfw.WindowHint(glfw.Resizable, glfw.False)
-	glfw.WindowHint(glfw.Decorated, glfw.False) // Borderless
-    // Use OpenGL 3.3 instead of 4.1 for better compatibility
-	glfw.WindowHint(glfw.ContextVersionMajor, 3)
-	glfw.WindowHint(glfw.ContextVersionMinor, 3)
-	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
-	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
-
-	// Create a window for each monitor
-	for i := uint32(0); i < c.localMonitors.MonitorCount; i++ {
-		monitor := c.localMonitors.Monitors[i]
-		
-		// Ensure we don't go out of bounds with monitors array
-		var glfwMonitor *glfw.Monitor
-		if int(i) < len(monitors) {
-			glfwMonitor = monitors[i]
-			log.Printf("Using GLFW monitor %d for local monitor %d", i, monitor.ID)
-		} else {
-			log.Printf("Warning: No matching GLFW monitor for local monitor %d, using nil", monitor.ID)
-			glfwMonitor = nil // Use default monitor if no matching GLFW monitor
-		}
-		
-		log.Printf("Creating window for monitor %d (%dx%d at %d,%d)", 
-			monitor.ID, monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY)
-		
-        // Calculate window dimensions - cap width at 1920 for better compatibility with multi-monitor setups
+    // Try to create windows one by one with increasing compatibility settings
+    for i := uint32(0); i < c.localMonitors.MonitorCount; i++ {
+        monitor := c.localMonitors.Monitors[i]
+        log.Printf("Creating window %d of %d for monitor %d (%dx%d at %d,%d)", 
+            i+1, c.localMonitors.MonitorCount, monitor.ID, 
+            monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY)
+        
+        // Calculate window dimensions - cap width at 1280 for better compatibility
         windowWidth := int(monitor.Width)
-        if windowWidth > 1920 {
-            windowWidth = 1920
-            log.Printf("Limiting window width to 1920 pixels for better compatibility")
+        windowHeight := int(monitor.Height)
+        
+        if windowWidth > 1280 {
+            windowWidth = 1280
+            log.Printf("Limiting window width to 1280 pixels for better compatibility")
         }
         
-		window, err := glfw.CreateWindow(
-			windowWidth,
-			int(monitor.Height),
-			"UltraRDP",
-			glfwMonitor, // Use GLFW monitor if available
-			nil,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create window for monitor %d: %v", monitor.ID, err)
-		}
-
-		// Set window position
-		window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
+        if windowHeight > 720 {
+            windowHeight = 720
+            log.Printf("Limiting window height to 720 pixels for better compatibility")
+        }
         
-        // Process events to avoid GLFW overloading
+        // Get corresponding GLFW monitor if available
+        var glfwMonitor *glfw.Monitor = nil
+        if int(i) < len(monitors) {
+            glfwMonitor = monitors[i]
+            log.Printf("Using physical GLFW monitor %d for logical monitor %d", i, monitor.ID)
+        } else {
+            log.Printf("No matching GLFW monitor for logical monitor %d, using windowed mode", monitor.ID)
+        }
+        
+        // Try three different OpenGL versions in order of preference
+        var window *glfw.Window = nil
+        var err error
+        
+        // Try OpenGL 3.3 first (preferred)
+        log.Printf("Attempting window creation with OpenGL 3.3")
+        glfw.DefaultWindowHints()
+        glfw.WindowHint(glfw.Resizable, glfw.False)
+        glfw.WindowHint(glfw.Decorated, glfw.True) // Use decorated for better compatibility
+        glfw.WindowHint(glfw.ContextVersionMajor, 3)
+        glfw.WindowHint(glfw.ContextVersionMinor, 3)
+        glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
+        glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
+        
+        // Try creating window for this monitor - use windowed mode for reliability
+        window, err = glfw.CreateWindow(
+            windowWidth,
+            windowHeight,
+            fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID), 
+            glfwMonitor, // Use the monitor we identified (can be nil)
+            nil,
+        )
+        
+        // If OpenGL 3.3 failed, try OpenGL 2.1 (backup)
+        if err != nil {
+            log.Printf("OpenGL 3.3 window creation failed: %v", err)
+            log.Printf("Attempting fallback to OpenGL 2.1...")
+            
+            glfw.DefaultWindowHints()
+            glfw.WindowHint(glfw.Resizable, glfw.False)
+            glfw.WindowHint(glfw.Decorated, glfw.True)
+            glfw.WindowHint(glfw.ContextVersionMajor, 2)
+            glfw.WindowHint(glfw.ContextVersionMinor, 1)
+            
+            // Try again with OpenGL 2.1
+            window, err = glfw.CreateWindow(
+                windowWidth,
+                windowHeight,
+                fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
+                nil,
+                nil,
+            )
+        }
+        
+        // If still failed, try compatibility profile as last resort
+        if err != nil {
+            log.Printf("OpenGL 2.1 window creation failed: %v", err)
+            log.Printf("Attempting last resort with compatibility profile...")
+            
+            glfw.DefaultWindowHints()
+            glfw.WindowHint(glfw.Resizable, glfw.False)
+            glfw.WindowHint(glfw.Decorated, glfw.True)
+            glfw.WindowHint(glfw.ClientAPI, glfw.OpenGLAPI)
+            glfw.WindowHint(glfw.ContextCreationAPI, glfw.NativeContextAPI)
+            
+            // Try one more time with compatibility profile
+            window, err = glfw.CreateWindow(
+                windowWidth,
+                windowHeight,
+                fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
+                nil,
+                nil,
+            )
+        }
+        
+        // Check if window creation failed after all attempts
+        if err != nil {
+            log.Printf("ERROR: All window creation attempts failed for monitor %d: %v", monitor.ID, err)
+            continue // Skip this monitor and try the next one
+        }
+        
+        // Window created successfully
+        log.Printf("Successfully created window for monitor %d", monitor.ID)
+        
+        // Set window position to match monitor position
+        window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
+        log.Printf("Window position set to %d,%d", int(monitor.PositionX), int(monitor.PositionY))
+        
+        // Store window in slice
+        c.windows[i] = window
+        windowsCreated++
+        
+        // Process events after each window creation
         glfw.PollEvents()
         
-        // Log success
-        windowsCreated++
-        log.Printf("Successfully created window %d of %d", windowsCreated, c.localMonitors.MonitorCount)
-
-		// Store window
-		c.windows[i] = window
-        
-        // Give GLFW time to process
-	}
-
-	return nil
+        // Small delay to let GLFW process events
+        time.Sleep(100 * time.Millisecond)
+    }
+    
+    // Check if we created at least one window
+    if windowsCreated == 0 {
+        return fmt.Errorf("failed to create any windows")
+    }
+    
+    log.Printf("Successfully created %d of %d windows", windowsCreated, c.localMonitors.MonitorCount)
+    log.Printf("=== WINDOW CREATION COMPLETE ===")
+    return nil
 }
-
-
 
 // updateDisplayLoop handles the display loop for all monitors
 func (c *Client) updateDisplayLoop() {
@@ -112,13 +176,12 @@ func (c *Client) updateDisplayLoop() {
     if err := c.createWindows(); err != nil {
         log.Printf("Failed to create windows: %v", err)
         // Continue despite errors to see if we get more diagnostic information
-        // The normal return statement was here, but we'll continue execution to get more diagnostic logs
-        // Removed: return
         log.Printf("GLFW monitors available: %d", len(glfw.GetMonitors()))
         log.Printf("Local monitors configured: %d", c.localMonitors.MonitorCount)
     }
 
     // Initialize OpenGL for each window and create resources
+    log.Printf("=== INITIALIZING OPENGL ===")
     textures := make([]uint32, len(c.windows))
     vaos := make([]uint32, len(c.windows))
     shaderPrograms := make([]uint32, len(c.windows))
@@ -126,59 +189,60 @@ func (c *Client) updateDisplayLoop() {
 
     for i, window := range c.windows {
         if window == nil {
-            log.Printf("Warning: Window %d is nil, skipping OpenGL initialization", i)
+            log.Printf("Window %d is nil, skipping OpenGL initialization", i)
             continue
         }
         
-        log.Printf("Making context current for window %d", i)
+        log.Printf("Initializing OpenGL for window %d", i)
+        
+        // Make this window's context current
         window.MakeContextCurrent()
+        
+        // Initialize OpenGL
         if err := gl.Init(); err != nil {
-            log.Printf("Failed to initialize OpenGL 3.3 for window %d: %v", i, err)
-            
-            // Try with more compatible OpenGL version
-            window.MakeContextCurrent()
-            glfw.DefaultWindowHints()
-            glfw.WindowHint(glfw.ContextVersionMajor, 2)
-            glfw.WindowHint(glfw.ContextVersionMinor, 1)
-            log.Printf("Attempting fallback to OpenGL 2.1 for better compatibility")
-            continue // Skip this window and try the next one
+            log.Printf("Failed to initialize OpenGL for window %d: %v", i, err)
+            continue
         }
-
-        // Create and bind texture
-        gl.GenTextures(1, &textures[i])
-        gl.BindTexture(gl.TEXTURE_2D, textures[i])
-
+        
+        // Create texture for this window
+        var texture uint32
+        gl.GenTextures(1, &texture)
+        textures[i] = texture
+        gl.BindTexture(gl.TEXTURE_2D, texture)
+        
         // Set texture parameters
         gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
         gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
         gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
         gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-
+        
         // Create vertex array object
-        gl.GenVertexArrays(1, &vaos[i])
-        gl.BindVertexArray(vaos[i])
-
+        var vao uint32
+        gl.GenVertexArrays(1, &vao)
+        vaos[i] = vao
+        gl.BindVertexArray(vao)
+        
         // Create vertex buffer
         vertices := []float32{
-            // Position   // Texture coords
-            -1.0, -1.0, 0.0, 0.0, // Bottom left
-            1.0, -1.0, 1.0, 0.0,  // Bottom right
-            -1.0, 1.0, 0.0, 1.0,  // Top left
-            1.0, 1.0, 1.0, 1.0,   // Top right
+            // Position    // Texture coords
+            -1.0, -1.0,    0.0, 0.0,  // Bottom left
+            1.0, -1.0,     1.0, 0.0,  // Bottom right
+            -1.0, 1.0,     0.0, 1.0,  // Top left
+            1.0, 1.0,      1.0, 1.0,  // Top right
         }
-
+        
         var vbo uint32
         gl.GenBuffers(1, &vbo)
         gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
         gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
-
+        
         // Set vertex attributes
         gl.VertexAttribPointer(0, 2, gl.FLOAT, false, 4*4, gl.PtrOffset(0))
         gl.EnableVertexAttribArray(0)
         gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 4*4, gl.PtrOffset(2*4))
         gl.EnableVertexAttribArray(1)
-
-        // Create and compile shaders
+        
+        // Create shader program
         vertexShader := gl.CreateShader(gl.VERTEX_SHADER)
         vertexSource := `
             #version 330
@@ -194,7 +258,19 @@ func (c *Client) updateDisplayLoop() {
         gl.ShaderSource(vertexShader, 1, csources, nil)
         free()
         gl.CompileShader(vertexShader)
-
+        
+        // Check vertex shader compilation
+        var success int32
+        gl.GetShaderiv(vertexShader, gl.COMPILE_STATUS, &success)
+        if success == gl.FALSE {
+            var logLength int32
+            gl.GetShaderiv(vertexShader, gl.INFO_LOG_LENGTH, &logLength)
+            shaderLog := string(make([]byte, logLength+1))
+            gl.GetShaderInfoLog(vertexShader, logLength, nil, gl.Str(shaderLog+"\x00"))
+            log.Printf("Failed to compile vertex shader: %s", shaderLog)
+            continue
+        }
+        
         fragmentShader := gl.CreateShader(gl.FRAGMENT_SHADER)
         fragmentSource := `
             #version 330
@@ -209,15 +285,39 @@ func (c *Client) updateDisplayLoop() {
         gl.ShaderSource(fragmentShader, 1, csources, nil)
         free()
         gl.CompileShader(fragmentShader)
-
-        // Create shader program
-        shaderPrograms[i] = gl.CreateProgram()
-        gl.AttachShader(shaderPrograms[i], vertexShader)
-        gl.AttachShader(shaderPrograms[i], fragmentShader)
-        gl.LinkProgram(shaderPrograms[i])
-        gl.UseProgram(shaderPrograms[i])
-
-        // Delete shaders as they're linked into the program and no longer necessary
+        
+        // Check fragment shader compilation
+        gl.GetShaderiv(fragmentShader, gl.COMPILE_STATUS, &success)
+        if success == gl.FALSE {
+            var logLength int32
+            gl.GetShaderiv(fragmentShader, gl.INFO_LOG_LENGTH, &logLength)
+            shaderLog := string(make([]byte, logLength+1))
+            gl.GetShaderInfoLog(fragmentShader, logLength, nil, gl.Str(shaderLog+"\x00"))
+            log.Printf("Failed to compile fragment shader: %s", shaderLog)
+            continue
+        }
+        
+        // Link shader program
+        program := gl.CreateProgram()
+        shaderPrograms[i] = program
+        gl.AttachShader(program, vertexShader)
+        gl.AttachShader(program, fragmentShader)
+        gl.LinkProgram(program)
+        
+        // Check program linking
+        gl.GetProgramiv(program, gl.LINK_STATUS, &success)
+        if success == gl.FALSE {
+            var logLength int32
+            gl.GetProgramiv(program, gl.INFO_LOG_LENGTH, &logLength)
+            programLog := string(make([]byte, logLength+1))
+            gl.GetProgramInfoLog(program, logLength, nil, gl.Str(programLog+"\x00"))
+            log.Printf("Failed to link shader program: %s", programLog)
+            continue
+        }
+        
+        gl.UseProgram(program)
+        
+        // Delete shaders after linking
         gl.DeleteShader(vertexShader)
         gl.DeleteShader(fragmentShader)
         
@@ -225,10 +325,13 @@ func (c *Client) updateDisplayLoop() {
         log.Printf("Successfully initialized OpenGL for window %d", i)
     }
     
-    log.Printf("Successfully initialized %d of %d windows with OpenGL", successful, len(c.windows))
+    log.Printf("Successfully initialized OpenGL for %d of %d windows", successful, len(c.windows))
+    log.Printf("=== OPENGL INITIALIZATION COMPLETE ===")
 
     // Main display loop
     for !c.stopped {
+        glfw.PollEvents()
+        
         c.frameMutex.Lock()
         for i, window := range c.windows {            
             // Skip nil windows
@@ -260,9 +363,6 @@ func (c *Client) updateDisplayLoop() {
             c.renderFrame(window, frameData, textures[i], vaos[i], shaderPrograms[i])
         }
         c.frameMutex.Unlock()
-        
-        // Process events
-        glfw.PollEvents()
     }
 
     // Cleanup
@@ -272,11 +372,11 @@ func (c *Client) updateDisplayLoop() {
         gl.DeleteProgram(shaderPrograms[i])
     }
     for _, window := range c.windows {
-        window.Destroy()
+        if window != nil {
+            window.Destroy()
+        }
     }
 }
-
-
 
 // renderFrame renders a frame to the specified window
 func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao, shaderProgram uint32) {
@@ -288,8 +388,6 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
         return
     }
     
-    log.Printf("Rendering frame with %d bytes of data", len(frameData))
-
     // Validate JPEG format (check for SOI marker)
     if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
         log.Printf("Error: Invalid JPEG format in renderFrame: missing SOI marker")
@@ -300,8 +398,7 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
         return
     }
 
-    // Decode JPEG frame data - note that frameData is now raw JPEG data from the server
-    // We no longer decode in updateFrameBuffer, only in renderFrame
+    // Decode JPEG frame data
     img, err := jpeg.Decode(bytes.NewReader(frameData))
     if err != nil {
         log.Printf("Error decoding JPEG frame: %v", err)
