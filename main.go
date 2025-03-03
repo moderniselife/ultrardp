@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
+	// Removing unused imports
+	// "os/signal"
+	// "syscall"
 	
 	"github.com/moderniselife/ultrardp/client"
 	"github.com/moderniselife/ultrardp/server"
