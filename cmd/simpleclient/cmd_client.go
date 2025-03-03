@@ -6,10 +6,12 @@ import (
 	"image"
 	"image/draw"
 	"image/jpeg"
+	"image/png"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -29,6 +31,7 @@ type SimpleClient struct {
 	stopChan       chan struct{}
 	frameMutex     sync.Mutex
 	frameBuffers   map[uint32][]byte
+	frameCount     map[uint32]int
 	windows        []*glfw.Window
 	textures       map[int]uint32  // Window index to texture ID
 	monitorMap     map[uint32]int  // Server monitor ID to window index
@@ -52,6 +55,7 @@ func main() {
 		textures:     make(map[int]uint32),
 		stopChan:    make(chan struct{}),
 		frameBuffers: make(map[uint32][]byte),
+		frameCount:   make(map[uint32]int),
 	}
 	
 	// Set up signal handling for graceful shutdown
@@ -122,25 +126,6 @@ func main() {
 	// Create windows and prepare for rendering
 	client.createWindows()
 	
-	// Draw test patterns to verify OpenGL is working
-	fmt.Println("Drawing test patterns...")
-	for i, window := range client.windows {
-		if window == nil {
-			continue
-		}
-		window.MakeContextCurrent()
-		
-		// Clear to different colors to identify each window
-		colors := [][]float32{{1,0,0,1}, {0,1,0,1}, {0,0,1,1}}
-		c := colors[i % len(colors)]
-		gl.ClearColor(c[0], c[1], c[2], c[3])
-		gl.Clear(gl.COLOR_BUFFER_BIT)
-		
-		drawDiagnosticPattern()
-		window.SwapBuffers()
-	}
-	time.Sleep(500 * time.Millisecond)
-	
 	fmt.Println("=================================================")
 	// Main display loop
 	fmt.Println("Starting main display loop with monitor mappings:", client.monitorMap)
@@ -148,7 +133,7 @@ func main() {
 		// Poll for GLFW events
 		glfw.PollEvents()
 		
-		// Render each window
+		// Render frames to each window
 		for i, window := range client.windows {
 			if window == nil {
 				continue
@@ -167,7 +152,6 @@ func main() {
 				if wIdx == i {
 					serverMonitorID = sID
 				}
-				// Also map 0-based window index when possible
 				if sID-1 == uint32(i) {
 					serverMonitorID = sID
 				}
@@ -178,14 +162,13 @@ func main() {
 			frameData, exists := client.frameBuffers[serverMonitorID]
 			client.frameMutex.Unlock()
 			fmt.Printf("Window %d mapped to server monitor %d, frame exists: %v\n", i, serverMonitorID, exists)
-			
+
 			if exists && len(frameData) > 0 {
 				window.MakeContextCurrent()
-				
+
 				// Ensure texture exists for this window
 				if _, ok := client.textures[i]; !ok {
-					fmt.Printf("Creating missing texture for window %d\n", i)
-					client.textures[i] = client.initializeTexture()
+					client.textures[i] = client.createTexture()
 				}
 				
 				fmt.Printf("Rendering frame for monitor %d to window %d (%d bytes)\n", 
@@ -193,29 +176,21 @@ func main() {
 				
 				// Display the frame
 				time.Sleep(50 * time.Millisecond) // Give some time for context switching
-				err := client.renderFrame(i, frameData)
+				err := client.displayFrame(i, frameData)
 				if err != nil {
 					fmt.Printf("Error rendering frame: %v\n", err)
 				}
 				
-				glfw.PollEvents() // Poll events between each window render
 				window.SwapBuffers()
 			} else {
 				// Even if no frame, make the window current and clear it to show something
 				window.MakeContextCurrent()
-				fmt.Printf("No frame data for window %d (server monitor %d)\n", i, serverMonitorID)
-				gl.ClearColor(0.1, 0.1, 0.1, 1.0) // Dark gray
+				gl.ClearColor(0.0, 0.0, 0.2, 1.0) // Dark blue 
 				gl.Clear(gl.COLOR_BUFFER_BIT)
 				
-				// Draw the test pattern for empty screens
-				drawDiagnosticPattern()
 				window.SwapBuffers()
 				
-				// Try to copy frames from other monitors
-				for srcMonID, frameBytes := range client.frameBuffers {
-					fmt.Printf("Available frame from server monitor %d (%d bytes)\n", 
-						srcMonID, len(frameBytes))
-				}
+				fmt.Printf("No frame data for window %d (server monitor %d)\n", i, serverMonitorID)
 			}
 		}
 		
@@ -311,7 +286,6 @@ func (c *SimpleClient) createWindows() {
 		// Create a texture for this window and store it
 		texture := c.initializeTexture()
 		c.textures[i] = texture
-		fmt.Printf("Created texture %d for window %d\n", texture, i)
 		
 		// Finish window creation
 		window.SetPos(centerX, centerY)
@@ -328,6 +302,18 @@ func (c *SimpleClient) createWindows() {
 	}
 }
 
+// createTexture creates a new OpenGL texture
+func (c *SimpleClient) createTexture() uint32 {
+	var texture uint32
+	gl.GenTextures(1, &texture)
+	gl.BindTexture(gl.TEXTURE_2D, texture)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+	return texture
+}
+
 // initializeTexture creates an OpenGL texture
 func (c *SimpleClient) initializeTexture() uint32 {
 	var texture uint32
@@ -338,6 +324,43 @@ func (c *SimpleClient) initializeTexture() uint32 {
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
 	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 	return texture
+}
+
+// saveImageToFile saves an image to a file
+func saveImageToFile(img image.Image, monitorID uint32, frameNum int, format string) string {
+	// Create debug directory if it doesn't exist
+	debugDir := "debug_frames"
+	if err := os.MkdirAll(debugDir, 0755); err != nil {
+		fmt.Printf("Error creating debug directory: %v\n", err)
+		return ""
+	}
+	
+	// Create a filename with monitor ID and frame number
+	var filename string
+	var f *os.File
+	var err error
+	
+	if format == "png" {
+		filename = filepath.Join(debugDir, fmt.Sprintf("frame_mon%d_%d.png", monitorID, frameNum))
+		f, err = os.Create(filename)
+		if err != nil {
+			fmt.Printf("Error creating debug file: %v\n", err)
+			return ""
+		}
+		defer f.Close()
+		png.Encode(f, img)
+	} else {
+		filename = filepath.Join(debugDir, fmt.Sprintf("frame_mon%d_%d.jpg", monitorID, frameNum))
+		f, err = os.Create(filename)
+		if err != nil {
+			fmt.Printf("Error creating debug file: %v\n", err)
+			return ""
+		}
+		defer f.Close()
+		jpeg.Encode(f, img, nil)
+	}
+	
+	return filename
 }
 
 // renderFrame renders a JPEG frame to the given window
@@ -351,6 +374,34 @@ func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
 	
 	fmt.Printf("===== RENDER DEBUG: window %d, frame size %d bytes =====\n", windowIndex, len(frameData))
 	
+	// Find the server monitor ID for this window index
+	var monitorID uint32
+	for sID, wIdx := range c.monitorMap {
+		if wIdx == windowIndex {
+			monitorID = sID
+			break
+		}
+	}
+	
+	if monitorID == 0 {
+		fmt.Printf("Warning: Unable to find server monitor ID for window %d\n", windowIndex)
+		monitorID = uint32(windowIndex + 1) // Fallback
+	}
+	
+	// Create debug frames directory
+	debugDir := "debug_frames"
+	if err := os.MkdirAll(debugDir, 0755); err != nil {
+		fmt.Printf("Error creating debug directory: %v\n", err)
+	}
+	
+	// Save raw JPEG data for manual inspection
+	rawFrameFile := filepath.Join(debugDir, fmt.Sprintf("raw_frame_win%d_mon%d.jpg", windowIndex, monitorID))
+	if err := os.WriteFile(rawFrameFile, frameData, 0644); err != nil {
+		fmt.Printf("Error saving raw frame data: %v\n", err)
+	} else {
+		fmt.Printf("Saved raw JPEG data to %s\n", rawFrameFile)
+	}
+	
 	// Check JPEG header
 	if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
 		return fmt.Errorf("invalid JPEG header: first bytes: %x %x", frameData[0], frameData[1])
@@ -358,7 +409,7 @@ func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
 	fmt.Println("JPEG header OK")
 	
 	// Decode JPEG data
-	fmt.Println("Decoding JPEG...")
+	fmt.Println("Decoding JPEG into image...")
 	img, err := jpeg.Decode(bytes.NewReader(frameData))
 	if err != nil {
 		fmt.Printf("JPEG decode error: %v\n", err)
@@ -368,113 +419,181 @@ func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
 		}
 		return err
 	}
+	
 	fmt.Printf("JPEG decoded successfully, size: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
+	
+	// Track frame count per monitor
+	c.frameCount[monitorID]++
+	
+	// Save the decoded image to a file (both PNG and JPEG for comparison)
+	jpgFilename := saveImageToFile(img, monitorID, c.frameCount[monitorID], "jpg")
+	pngFilename := saveImageToFile(img, monitorID, c.frameCount[monitorID], "png")
+	
+	if jpgFilename != "" && pngFilename != "" {
+		fmt.Printf("Saved decoded images to %s and %s\n", jpgFilename, pngFilename)
+	}
 	
 	// Convert to RGBA
 	bounds := img.Bounds()
 	rgba := image.NewRGBA(bounds)
-	draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+	fmt.Printf("Image dimensions: %dx%d\n", bounds.Dx(), bounds.Dy())
+	draw.Draw(rgba, bounds, img, bounds.Min, draw.Over)
 	fmt.Printf("Converted to RGBA, pixel buffer size: %d bytes\n", len(rgba.Pix))
+	
+	// Save the RGBA data as a PNG for inspection
+	rgbaFilename := filepath.Join(debugDir, fmt.Sprintf("rgba_mon%d_%d.png", monitorID, c.frameCount[monitorID]))
+	rgbaFile, err := os.Create(rgbaFilename)
+	if err != nil {
+		fmt.Printf("Error creating RGBA debug file: %v\n", err)
+	} else {
+		defer rgbaFile.Close()
+		png.Encode(rgbaFile, rgba)
+		fmt.Printf("Saved RGBA data to %s\n", rgbaFilename)
+	}
 	
 	// Get or create the texture for this window
 	texture, ok := c.textures[windowIndex]
 	if !ok {
-		fmt.Printf("No texture found for window %d, creating one\n", windowIndex)
-		texture = c.initializeTexture()
+		texture = c.createTexture()
+		fmt.Printf("Created new texture ID %d for window %d\n", texture, windowIndex)
 		c.textures[windowIndex] = texture
 	}
-	// Try rendering a test pattern first to verify OpenGL is working
-	if false { // Disabled for now as we know the test pattern works
-		window.SwapBuffers()
-		time.Sleep(100 * time.Millisecond)
-	}
+	
 	// Debug OpenGL state
 	window.MakeContextCurrent() // Make sure context is current
 	var maxSize int32
 	gl.GetIntegerv(gl.MAX_TEXTURE_SIZE, &maxSize)
 	fmt.Printf("OpenGL MAX_TEXTURE_SIZE: %d\n", maxSize)
 	
-	// Check for errors
-	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
-		fmt.Printf("OpenGL error before texture update: 0x%x\n", glErr)
-	}
-	
-	// Clear to brighter background colors for each window
-	switch windowIndex {
-	case 0: gl.ClearColor(0.5, 0.0, 0.0, 1.0) // Bright red for window 0
-	case 1: gl.ClearColor(0.0, 0.5, 0.0, 1.0) // Bright green for window 1
-	case 2: gl.ClearColor(0.0, 0.0, 0.2, 1.0) // Dark blue for window 2
-	}
-	gl.Clear(gl.COLOR_BUFFER_BIT)
-	
-	fmt.Println("Updating texture...")
-	// Update texture with image data using the mapped texture
-	gl.BindTexture(gl.TEXTURE_2D, texture)
+	// Update texture with RGBA data
+	gl.BindTexture(gl.TEXTURE_2D, texture) 
 	// Check errors after binding
 	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
 		fmt.Printf("OpenGL error after texture bind: 0x%x\n", glErr)
+		return fmt.Errorf("OpenGL error after bind: 0x%x", glErr)
 	}
-
+	
+	// Force pixel storage alignment to 1 to handle any image size
+	gl.PixelStorei(gl.UNPACK_ALIGNMENT, 1)
+	gl.PixelStorei(gl.PACK_ALIGNMENT, 1)
+	if pixelErr := gl.GetError(); pixelErr != gl.NO_ERROR {
+		fmt.Printf("OpenGL error after setting pixel alignment: 0x%x\n", pixelErr)
+	}
+	
 	// Upload texture data - carefully manage error checking
 	gl.TexImage2D(
-		gl.TEXTURE_2D,          // target
-		0,                      // level
-		gl.RGBA,                // internal format
-		int32(bounds.Dx()),     // width
-		int32(bounds.Dy()),     // height
-		0,                      // border
-		gl.RGBA,                // format
-		gl.UNSIGNED_BYTE,       // type
-		gl.Ptr(rgba.Pix))       // pixels
-
-	// Check after texture upload
+		gl.TEXTURE_2D,
+		0,
+		gl.RGBA,
+		int32(bounds.Dx()),
+		int32(bounds.Dy()),
+		0,
+		gl.RGBA,
+		gl.UNSIGNED_BYTE,
+		gl.Ptr(rgba.Pix))
+		
+	// Check for errors after texture upload
 	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
-		fmt.Printf("OpenGL error after TexImage2D: 0x%x\n", glErr)
+		fmt.Printf("OpenGL error after texture upload: 0x%x\n", glErr)
+		return fmt.Errorf("failed to upload texture: 0x%x", glErr)
+	} else if bounds.Dx() > 0 && bounds.Dy() > 0 {
+		fmt.Printf("Texture upload successful for %dx%d image\n", bounds.Dx(), bounds.Dy())
 	}
-
-	drawTexturedQuad(texture)
-	
-	// Check for errors after rendering
-	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
-		fmt.Printf("OpenGL error after rendering: 0x%x\n", glErr)
-	}
-	
 	return nil
 }
 
-// drawDiagnosticPattern draws a simple color pattern
-func drawDiagnosticPattern() {
-	// Set up projection
-	gl.MatrixMode(gl.PROJECTION)
-	gl.LoadIdentity()
-	gl.Ortho(0, 1, 0, 1, -1, 1)
+// displayFrame displays a JPEG frame in the given window
+func (c *SimpleClient) displayFrame(windowIndex int, frameData []byte) error {
+	// Ensure we have the correct window context before anything else
+	window := c.windows[windowIndex]
+	if window == nil || window.ShouldClose() {
+		return fmt.Errorf("window %d is nil or should close", windowIndex)
+	}
+	// Make window current to ensure proper OpenGL context
+	window.MakeContextCurrent()
+
+	// Render the frame to the window's texture
+	err := c.renderFrame(windowIndex, frameData)
+	if err != nil {
+		return err
+	}
 	
-	gl.MatrixMode(gl.MODELVIEW)
-	gl.LoadIdentity()
+	// Get the texture for this window
+	texture, ok := c.textures[windowIndex]
+	if !ok {
+		return fmt.Errorf("no texture found for window %d", windowIndex)
+	}
 	
-	// Disable texturing for direct color drawing
-	gl.Disable(gl.TEXTURE_2D)
+	// Print info for debugging
+	fmt.Printf("Display frame: Window %d, TextureID: %d\n", windowIndex, texture)
 	
-	// Draw a colorful triangle pattern
-	gl.Begin(gl.TRIANGLES)
-	// First triangle (top left)
-	gl.Color3f(1.0, 0.0, 0.0); gl.Vertex2f(0.0, 0.0)   // Red
-	gl.Color3f(0.0, 1.0, 0.0); gl.Vertex2f(0.5, 0.0)   // Green
-	gl.Color3f(0.0, 0.0, 1.0); gl.Vertex2f(0.0, 0.5)   // Blue
-	// Second triangle (top right)
-	gl.Color3f(1.0, 1.0, 0.0); gl.Vertex2f(0.5, 0.0)   // Yellow
-	gl.Color3f(1.0, 0.0, 1.0); gl.Vertex2f(1.0, 0.0)   // Magenta
-	gl.Color3f(0.0, 1.0, 1.0); gl.Vertex2f(1.0, 0.5)   // Cyan
-	// Third triangle (bottom right)
-	gl.Color3f(1.0, 1.0, 1.0); gl.Vertex2f(1.0, 0.5)   // White
-	gl.Color3f(0.5, 0.5, 0.5); gl.Vertex2f(1.0, 1.0)   // Gray
-	gl.Color3f(0.0, 0.0, 0.0); gl.Vertex2f(0.5, 1.0)   // Black
-	// Fourth triangle (bottom left)
-	gl.Color3f(1.0, 0.5, 0.0); gl.Vertex2f(0.5, 1.0)   // Orange
-	gl.Color3f(0.5, 0.0, 0.5); gl.Vertex2f(0.0, 1.0)   // Purple
-	gl.Color3f(0.0, 0.5, 0.0); gl.Vertex2f(0.0, 0.5)   // Dark green
-	gl.End()
+	// Clear the window with a dark background
+	gl.ClearColor(0.2, 0.2, 0.2, 1.0)
+	gl.Clear(gl.COLOR_BUFFER_BIT)
+
+	fmt.Printf("About to render texture with ID %d\n", texture)
+	
+	// SIMPLIFIED APPROACH - Only display the texture
+	renderSimpleFullscreenTexture(texture)
+
+	return nil
 }
+
+// renderSimpleFullscreenTexture renders a texture using the simplest possible approach
+func renderSimpleFullscreenTexture(textureID uint32) {
+    // Reset OpenGL state completely
+    gl.GetError() // Clear any previous errors
+    
+    // Disable everything that could interfere
+    gl.Disable(gl.DEPTH_TEST)
+    gl.Disable(gl.CULL_FACE)
+    gl.Disable(gl.BLEND)
+    gl.Disable(gl.LIGHTING)
+    
+    // Set up a simple orthographic projection
+    gl.MatrixMode(gl.PROJECTION)
+    gl.LoadIdentity()
+    gl.Ortho(0, 1, 0, 1, -1, 1)
+    
+    gl.MatrixMode(gl.MODELVIEW)
+    gl.LoadIdentity()
+    
+    // Enable texturing
+    gl.Enable(gl.TEXTURE_2D)
+    
+    // Bind the texture and set parameters
+    gl.BindTexture(gl.TEXTURE_2D, textureID)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+    
+    // Set color to pure white (1,1,1,1) to show texture as-is
+    gl.Color4f(1.0, 1.0, 1.0, 1.0)
+    
+    // Draw a fullscreen quad with the texture - note correct orientation
+    gl.Begin(gl.QUADS)
+    
+    // Standard texture coordinates - [0,0] at bottom-left
+    gl.TexCoord2f(0.0, 0.0); gl.Vertex2f(0.0, 0.0) // Bottom-left
+    gl.TexCoord2f(1.0, 0.0); gl.Vertex2f(1.0, 0.0) // Bottom-right
+    gl.TexCoord2f(1.0, 1.0); gl.Vertex2f(1.0, 1.0) // Top-right
+    gl.TexCoord2f(0.0, 1.0); gl.Vertex2f(0.0, 1.0) // Top-left
+    
+    gl.End()
+    
+    // Disable texturing when done
+    gl.Disable(gl.TEXTURE_2D)
+    
+    // Check for errors
+    if err := gl.GetError(); err != gl.NO_ERROR {
+        fmt.Printf("OpenGL error in renderSimpleFullscreenTexture: 0x%x\n", err)
+    } else {
+        fmt.Println("Simple texture render completed successfully")
+    }
+}
+
+// REMOVED all the old texture drawing functions to focus on a single approach
 
 // networkHandler runs in a separate goroutine to handle network communication
 func (c *SimpleClient) networkHandler() {
@@ -551,6 +670,7 @@ func (c *SimpleClient) receivePackets() {
 		// Check if we should stop
 		select {
 		case <-c.stopChan:
+			fmt.Println("Stopped packet receiver")
 			return
 		default:
 			// Continue
@@ -625,58 +745,4 @@ func (c *SimpleClient) handleVideoFrame(payload []byte) {
 	c.frameMutex.Unlock()
 	
 	fmt.Printf("Received frame for monitor %d (%d bytes)\n", monitorID, len(frameData))
-}
-
-// drawTexturedQuad draws a textured quad covering the entire viewport
-func drawTexturedQuad(textureID uint32) {
-	// Reset any error flags
-	gl.GetError()
-
-	fmt.Printf("**RENDER** Drawing textured quad with texture ID: %d\n", textureID)
-	
-	// Reset all OpenGL state that could affect rendering
-	gl.Disable(gl.DEPTH_TEST)
-	gl.Disable(gl.LIGHTING)
-	gl.Disable(gl.CULL_FACE)
-	
-	// Set up matrices
-	gl.MatrixMode(gl.PROJECTION)
-	gl.LoadIdentity()
-	gl.Ortho(-1, 1, -1, 1, -1, 1)  // Standard OpenGL coordinates
-
-	gl.MatrixMode(gl.MODELVIEW)
-	gl.LoadIdentity()
-	
-	// Enable texturing
-	gl.Enable(gl.TEXTURE_2D)
-
-	// Bind the provided texture
-	gl.BindTexture(gl.TEXTURE_2D, textureID)
-
-	// Enable blending for proper alpha handling
-	gl.Enable(gl.BLEND)
-	gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA) 
-	
-	// Set vertex and texture coordinate color to white
-	gl.Color4f(1.0, 1.0, 1.0, 1.0)
-	
-	// Draw as two triangles (instead of a quad) to avoid issues with primitive types
-	gl.Begin(gl.TRIANGLES)
-	// First triangle
-	gl.TexCoord2f(0.0, 1.0); gl.Vertex3f(-1.0, -1.0, 0.0) // Bottom left
-	gl.TexCoord2f(1.0, 1.0); gl.Vertex3f(1.0, -1.0, 0.0)  // Bottom right
-	gl.TexCoord2f(1.0, 0.0); gl.Vertex3f(1.0, 1.0, 0.0)   // Top right
-	
-	// Second triangle
-	gl.TexCoord2f(0.0, 1.0); gl.Vertex3f(-1.0, -1.0, 0.0) // Bottom left
-	gl.TexCoord2f(1.0, 0.0); gl.Vertex3f(1.0, 1.0, 0.0)   // Top right
-	gl.TexCoord2f(0.0, 0.0); gl.Vertex3f(-1.0, 1.0, 0.0)  // Top left
-	gl.End()
-
-	// Disable texturing when done
-	gl.Disable(gl.TEXTURE_2D)
-	
-	if glErr := gl.GetError(); glErr != gl.NO_ERROR {
-		fmt.Printf("OpenGL error after drawing quad: 0x%x\n", glErr)
-	}
 }

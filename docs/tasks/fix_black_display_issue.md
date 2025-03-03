@@ -1,159 +1,154 @@
-# Fix Black Display Issue in UltraRDP Client
+# Fixing Black Display Issues in RDP Client
 
 ## Task Description
-Windows were opening but displaying with blank (black) screens in the UltraRDP client. While frames were being received from the server properly (as indicated by log messages), they were not being rendered to the windows.
 
-## Root Cause Analysis
+Windows were either not opening correctly or displaying black screens instead of showing remote desktop content. This task involved diagnosing and fixing the issue to allow the client to properly display frames received from the server.
 
-After testing various approaches, I determined that the issue was primarily related to how window creation and rendering were being handled. The detailed analysis revealed several key issues:
+## Problem Analysis
 
-1. **OpenGL Context Management**: The OpenGL context was not properly initialized or made current for each window before rendering operations.
+After implementing diagnostic code and analyzing logs, we uncovered multiple issues:
 
-2. **Texture Initialization**: Textures weren't being properly created or bound to windows for rendering.
+1. **Server-side Issue**: Monitor 3 had invalid screen coordinates (4294964736,0) that were causing screenshot capture to fail.
+2. **OpenGL Initialization Problem**: There was a segmentation fault during window creation due to improper OpenGL initialization.
+3. **Frame Transmission Problems**: Frames were being captured but not properly processed and displayed by the client.
 
-3. **Frame Rendering Loop**: The main display loop wasn't properly processing frames and applying them to the correct windows.
+## Steps Taken
 
-4. **Thread Handling**: GLFW operations weren't consistently running on the main thread with proper locking.
+### Server-Side Fixes
 
-## Solution Implementation
+1. Added coordinate validation to detect unreasonable values:
+   ```go
+   isValidCoords := true
+   if monitor.PositionX > 10000 || monitor.PositionY > 10000 {
+       log.Printf("WARNING: Invalid monitor coordinates detected for monitor %d: (%d,%d)",
+           monitor.ID, monitor.PositionX, monitor.PositionY)
+       isValidCoords = false
+   }
+   ```
 
-### 1. Create a Standalone Test Client
+2. Implemented multiple capture methods based on the monitor's coordinate validity:
+   ```go
+   if isValidCoords {
+       // Try with coordinates first if they seem valid
+       bound := image.Rect(int(monitor.PositionX), int(monitor.PositionY),
+           int(monitor.PositionX)+int(monitor.Width), int(monitor.PositionY)+int(monitor.Height))
+       
+       log.Printf("Capturing monitor %d with bounds: %v", monitor.ID, bound)
+       img, err = screenshot.CaptureRect(bound)
+   } else {
+       // For monitors with suspect coordinates, use display index directly
+       if displayIndex >= 0 && displayIndex < screenshot.NumActiveDisplays() {
+           log.Printf("Capturing monitor %d using display index %d", monitor.ID, displayIndex)
+           img, err = screenshot.CaptureDisplay(displayIndex)
+       }
+   }
+   ```
 
-First, I created a simplified standalone client that handles the entire process from handshake to rendering in a clean implementation:
+3. Added detailed frame validation and diagnostic saving:
+   - Added black frame detection to identify capture issues
+   - Saved debug frames to help diagnose issues
+   - Enhanced error handling and retries
 
-```go
-// cmd/simpleclient/cmd_client.go
-func main() {
-    // Force display code to run on the main thread - critical for GLFW
-    runtime.LockOSThread()
-    
-    // Initialize GLFW early
-    if err := glfw.Init(); err != nil {
-        log.Fatalf("Failed to initialize GLFW: %v", err)
-    }
-    defer glfw.Terminate()
-    
-    // Create client, connect to server and get monitor configuration
-    client := &SimpleClient{
-        stopChan:    make(chan struct{}),
-        frameBuffers: make(map[uint32][]byte),
-    }
-    
-    // Configure network handler in a separate goroutine
-    go client.networkHandler()
-    
-    // Create windows for each monitor on the main thread
-    client.createWindows()
-    
-    // Main display loop with proper rendering
-    for !client.stopped {
-        // Poll for events
-        glfw.PollEvents()
-        
-        // Render frames to each window
-        for i, window := range client.windows {
-            if window == nil || window.ShouldClose() {
-                continue
-            }
-            
-            // Get frame data and render it
-            serverMonitorID := uint32(i + 1)
-            frameData, exists := client.frameBuffers[serverMonitorID]
-            
-            if exists && len(frameData) > 0 {
-                window.MakeContextCurrent()
-                client.renderFrame(i, frameData)
-                window.SwapBuffers()
-            }
-        }
-    }
-}
+### Client-Side Fixes
+
+1. **Fixed Window Creation and OpenGL Initialization Sequence**:
+   - Created all windows first before initializing OpenGL
+   - Fixed the order of operations to ensure a valid context before calling OpenGL functions
+   - Delayed OpenGL initialization until after windows are created:
+   ```go
+   // Only after all windows are created, initialize OpenGL and create textures
+   if windowCount > 0 {
+       // Make first window's context current
+       c.windows[0].MakeContextCurrent()
+       
+       // Initialize OpenGL
+       if err := gl.Init(); err != nil {
+           return fmt.Errorf("failed to initialize OpenGL: %v", err)
+       }
+       
+       version := gl.GoStr(gl.GetString(gl.VERSION))
+       fmt.Printf("OpenGL initialized: %s\n", version)
+   }
+   ```
+
+2. **Improved Frame Buffer Handling**:
+   - Fixed memory management for frame buffers
+   - Used copy-on-read to prevent race conditions
+   ```go
+   // Make a copy of the frame data so we can release the mutex quickly
+   frameDataCopy := make([]byte, len(frameData))
+   copy(frameDataCopy, frameData)
+   c.frameMutex.Unlock()
+   ```
+
+3. **Enhanced Rendering Pipeline**:
+   - Simplified OpenGL state management:
+   ```go
+   // Reset OpenGL state completely
+   gl.GetError() // Clear any previous errors
+   
+   // Disable everything that could interfere
+   gl.Disable(gl.DEPTH_TEST)
+   gl.Disable(gl.CULL_FACE)
+   gl.Disable(gl.BLEND)
+   gl.Disable(gl.LIGHTING)
+   
+   // Set up a simple orthographic projection
+   gl.MatrixMode(gl.PROJECTION)
+   gl.LoadIdentity()
+   gl.Ortho(0, 1, 0, 1, -1, 1)
+   ```
+   - Added proper texture management with error checking
+   - Implemented fallback rendering for missing frames
+
+4. **Added Comprehensive Diagnostics**:
+   - Added frame saving for debugging
+   - Implemented FPS tracking
+   - Added error logging and recovery at each step
+
+## Results and Verification
+
+### Server-Side Improvements
+
+The server now properly detects invalid monitor coordinates and automatically switches to a display index-based capture method:
+
+```
+WARNING: Invalid monitor coordinates detected for monitor 3: (4294964736,0)
+Capturing monitor 3 using display index 2
 ```
 
-### 2. Proper Texture Management
+### Client-Side Improvements
 
-In the standalone client, I implemented correct texture initialization and management:
+1. **Solved Segmentation Fault**:
+   - Fixed the sequence of window creation and OpenGL initialization
+   - Ensure proper context handling before calling OpenGL functions
+   - Added appropriate error checking and recovery
 
-```go
-// initializeTexture creates an OpenGL texture
-func (c *SimpleClient) initializeTexture() uint32 {
-    var texture uint32
-    gl.GenTextures(1, &texture)
-    gl.BindTexture(gl.TEXTURE_2D, texture)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    return texture
-}
-```
+2. **Fixed Black Display Issue**:
+   - Implemented proper texture upload and rendering
+   - Added clear color to identify when frames are available
+   - Improved JPEG decoding and error handling
 
-### 3. Proper Frame Rendering
+## Lessons Learned
 
-Implemented a solid frame rendering function that correctly decodes JPEG data and renders it to textures:
+1. **OpenGL Initialization Sequence is Critical**:
+   - OpenGL functions cannot be called before a valid context is made current
+   - When creating multiple windows, ensure proper context management
+   - Use a consistent initialization flow (windows first, then OpenGL)
 
-```go
-// renderFrame renders a JPEG frame to the given window
-func (c *SimpleClient) renderFrame(windowIndex int, frameData []byte) error {
-    // Decode JPEG data
-    img, err := jpeg.Decode(bytes.NewReader(frameData))
-    if err != nil {
-        return fmt.Errorf("JPEG decode error: %v", err)
-    }
-    
-    // Convert to RGBA
-    bounds := img.Bounds()
-    rgba := image.NewRGBA(bounds)
-    draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
-    
-    // Update texture with image data
-    gl.BindTexture(gl.TEXTURE_2D, c.textures[windowIndex])
-    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 
-        int32(bounds.Dx()), int32(bounds.Dy()), 
-        0, gl.RGBA, gl.UNSIGNED_BYTE, gl.Ptr(rgba.Pix))
-    
-    // Draw texture as a full-screen quad
-    drawTexturedQuad()
-    
-    return nil
-}
-```
+2. **Coordinate Validation is Essential**:
+   - Always check for reasonable coordinate values
+   - Implement fallback mechanisms for invalid coordinates
+   - Look for potential integer overflow/underflow issues
 
-### 4. Key Improvements in the Solution
+3. **Diagnostic Tools are Invaluable**:
+   - Frame saving at each stage helped identify issues
+   - Error logging provided crucial context for debugging
+   - Visual verification with blue/black backgrounds helped confirm logic
 
-1. **Consistent Thread Management**: Ensuring that GLFW operations run on the main thread with proper OS thread locking.
+## Next Steps
 
-2. **Correct Window Creation Sequence**: Following a proven pattern for window creation:
-   - Initialize GLFW first
-   - Create windows with proper hints
-   - Process events after window creation
-   - Add delay between window creations to prevent overwhelming the windowing system
-
-3. **Proper Context Management**: 
-   - Make a window's context current before performing OpenGL operations on it
-   - Initialize OpenGL once
-   - Create textures for each window
-
-4. **Structured Rendering Loop**:
-   - Poll for events
-   - Process each window
-   - Access the correct frame buffer for each window
-   - Render frames with proper JPEG decoding and texture binding
-   - Swap buffers to display the result
-
-## Testing
-The solution was tested with a standalone client that successfully:
-
-1. Opens windows for each monitor
-2. Connects to the server and completes the handshake
-3. Receives frame data
-4. Renders the frames to the correct windows
-
-## Conclusion
-The black display issue was resolved by implementing a proper window creation and rendering system that follows GLFW and OpenGL best practices. The standalone client demonstrates the correct approach, which can be incorporated into the main client codebase. The key learning points were:
-
-1. GLFW operations must run on the main thread with proper OS thread locking
-2. OpenGL contexts must be made current before performing operations
-3. Textures must be properly initialized and bound for rendering
-4. The rendering loop must correctly match frame data to windows
-5. Windows should be created with controlled timing and proper event processing
+1. Implement more robust monitor mapping between server and client
+2. Add proper scaling to handle different monitor resolutions
+3. Optimize JPEG encoding/decoding for better performance
+4. Consider hardware acceleration for screen capture and rendering

@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"runtime"
+	"os"
 	
 	"github.com/go-gl/glfw/v3.3/glfw"
 	"github.com/kbinani/screenshot"
@@ -25,6 +26,7 @@ type Client struct {
 	stopChan       chan struct{}
 	frameMutex     sync.Mutex
 	frameBuffers   map[uint32][]byte // Buffers for each monitor
+	frameCount     map[uint32]int    // Frame counter for each monitor
 	windows        []*glfw.Window    // Windows for displaying frames
 }
 
@@ -50,6 +52,7 @@ func NewClient(address string) (*Client, error) {
 		stopped:        false,
 		stopChan:       make(chan struct{}),
 		frameBuffers:   make(map[uint32][]byte),
+		frameCount:     make(map[uint32]int),
 	}, nil
 }
 
@@ -162,9 +165,29 @@ func (c *Client) createMonitorMapping() {
 			serverMonitor.ID, localMonitor.ID)
 		
 		// Initialize frame buffer for this monitor with a reasonable initial size
-		c.frameBuffers[localMonitor.ID] = make([]byte, int(localMonitor.Width*localMonitor.Height*4)) // 4 bytes per pixel (RGBA)
+		c.frameBuffers[localMonitor.ID] = make([]byte, 0, 1024*1024) // 1MB initial capacity
+		c.frameCount[localMonitor.ID] = 0 // Initialize frame counter
 	}
 	log.Printf("Created %d monitor mappings", len(c.monitorMap))
+	
+	// Log details of what monitors are available on both sides
+	log.Printf("Server monitors:")
+	for _, m := range c.serverMonitors.Monitors {
+		log.Printf("  ID: %d, Size: %dx%d, Position: (%d,%d), Primary: %v", 
+			m.ID, m.Width, m.Height, m.PositionX, m.PositionY, m.Primary)
+	}
+	
+	log.Printf("Local monitors:")
+	for _, m := range c.localMonitors.Monitors {
+		log.Printf("  ID: %d, Size: %dx%d, Position: (%d,%d), Primary: %v", 
+			m.ID, m.Width, m.Height, m.PositionX, m.PositionY, m.Primary)
+	}
+	
+	// Create the debug directory for frames
+	debugDir := "debug_frames"
+	if err := os.MkdirAll(debugDir, 0755); err != nil {
+		log.Printf("Failed to create debug directory: %v", err)
+	}
 }
 
 // handlePacket processes an incoming packet from the server
@@ -210,26 +233,39 @@ func (c *Client) handlePacket(packet *protocol.Packet) {
 // updateFrameBuffer updates the frame buffer for a specific monitor
 func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
     c.frameMutex.Lock()
+    defer c.frameMutex.Unlock()
     
     // Map server monitor ID to local monitor ID
     localMonitorID, ok := c.monitorMap[serverMonitorID]
     if !ok {
-        log.Printf("No mapping found for server monitor ID %d", serverMonitorID)
+        // Only log this occasionally to avoid log spam
+        if c.frameCount[0] % 30 == 0 {
+            log.Printf("No mapping found for server monitor ID %d", serverMonitorID)
+        }
+        c.frameCount[0]++
         return
     }
     
     // Validate JPEG header (SOI marker: FF D8)
     if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
-        // Unlock mutex before returning
-        c.frameMutex.Unlock()
-        log.Printf("Invalid JPEG data received: missing SOI marker")
+        log.Printf("Invalid JPEG data received for monitor %d: missing SOI marker", localMonitorID)
         return
     }
     
     // Store the raw JPEG data for rendering later
-    c.frameBuffers[localMonitorID] = frameData
-    c.frameMutex.Unlock()
-    log.Printf("Updated frame buffer for monitor %d (server ID: %d) with %d bytes of JPEG data", localMonitorID, serverMonitorID, len(frameData))
+    // Use a fresh slice with the exact capacity needed to avoid memory issues
+    newBuffer := make([]byte, len(frameData))
+    copy(newBuffer, frameData)
+    c.frameBuffers[localMonitorID] = newBuffer
+    
+    // Increment frame counter
+    c.frameCount[localMonitorID]++
+    
+    // Only log occasionally to avoid flooding
+    if c.frameCount[localMonitorID] % 30 == 0 {
+        log.Printf("Updated frame buffer for monitor %d (server ID: %d) with %d bytes of JPEG data (frame #%d)", 
+            localMonitorID, serverMonitorID, len(frameData), c.frameCount[localMonitorID])
+    }
 }
 
 
