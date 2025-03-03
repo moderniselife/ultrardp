@@ -8,75 +8,62 @@ import (
 	"image/jpeg"
 	"log"
 	"runtime"
-	"time"
 
-	"github.com/go-gl/gl/v2.1/gl"  // Change to OpenGL 2.1 for maximum compatibility
+	"github.com/go-gl/gl/v3.3-core/gl"
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
 // createWindows creates GLFW windows for each mapped monitor
 func (c *Client) createWindows() error {
-	// Initialize windows slice
-	c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
-    var windowsCreated uint32 = 0
+    // Initialize windows slice
+    c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
     
-    log.Printf("=== WINDOW CREATION START ===")
-    log.Printf("Attempting to create %d windows for monitors (SIMPLIFIED VERSION)", c.localMonitors.MonitorCount)
-	
-	// Use most basic window creation settings
+    // Set window creation hints - keeping it very simple
+    glfw.DefaultWindowHints()
+    glfw.WindowHint(glfw.ContextVersionMajor, 3)
+    glfw.WindowHint(glfw.ContextVersionMinor, 3)
+    glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
+    glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
+    
+    // Get available monitors
+    monitors := glfw.GetMonitors()
+    log.Printf("Found %d GLFW monitors", len(monitors))
+    
+    // Create windows
     for i := uint32(0); i < c.localMonitors.MonitorCount; i++ {
         monitor := c.localMonitors.Monitors[i]
-        log.Printf("Creating window %d of %d for monitor %d", i+1, c.localMonitors.MonitorCount, monitor.ID)
+        log.Printf("Creating window for monitor %d", monitor.ID)
         
-        // Use fixed modest window size for compatibility
-        windowWidth := 800
-        windowHeight := 600
-        
-        // Use the simplest possible window hints for maximum compatibility
-        glfw.DefaultWindowHints()
-        glfw.WindowHint(glfw.ContextVersionMajor, 2)
-        glfw.WindowHint(glfw.ContextVersionMinor, 1)
-        // Don't specify any profile to use system default
-        
-        // Create window - always in windowed mode
+        // Create window (always windowed mode for now)
         window, err := glfw.CreateWindow(
-            windowWidth, 
-            windowHeight,
+            800, 600, // Fixed size for simplicity
             fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
-            nil,  // Always use windowed mode (no monitor association)
-            nil,  // No shared context
+            nil, // No monitor association
+            nil, // No shared context
         )
         
         if err != nil {
-            log.Printf("Failed to create window: %v", err)
+            log.Printf("Failed to create window for monitor %d: %v", monitor.ID, err)
             continue
         }
         
-        log.Printf("Window created successfully for monitor %d", monitor.ID)
-        
-        // Position window according to monitor layout
         window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
-        log.Printf("Window positioned at %d,%d", int(monitor.PositionX), int(monitor.PositionY))
-        
-        // Store window in slice
         c.windows[i] = window
-        windowsCreated++
-        
-        // Process events and add delay between creations
-        glfw.PollEvents()
-        time.Sleep(200 * time.Millisecond)
     }
     
-    // One final poll events
-    glfw.PollEvents()
+    // Count created windows
+    windowCount := 0
+    for _, window := range c.windows {
+        if window != nil {
+            windowCount++
+        }
+    }
     
-    // Check if we created at least one window
-    if windowsCreated == 0 {
+    if windowCount == 0 {
         return fmt.Errorf("failed to create any windows")
     }
     
-    log.Printf("Successfully created %d of %d windows", windowsCreated, c.localMonitors.MonitorCount)
-    log.Printf("=== WINDOW CREATION COMPLETE ===")
+    log.Printf("Created %d windows successfully", windowCount)
     return nil
 }
 
@@ -85,64 +72,163 @@ func (c *Client) updateDisplayLoop() {
     // GLFW event handling must run on the main thread
     runtime.LockOSThread()
 
-    // GLFW is already initialized in Start()
+    // Initialize GLFW
+    if err := glfw.Init(); err != nil {
+        log.Printf("Failed to initialize GLFW: %v", err)
+        return
+    }
     defer glfw.Terminate()
+    
+    log.Printf("GLFW initialized successfully, version: %s", glfw.GetVersionString())
 
-    log.Printf("Starting display loop")
-
-    // Create windows for each mapped monitor
+    // Create windows for each monitor
     if err := c.createWindows(); err != nil {
-        log.Printf("Failed to create windows: %v", err)
-        // Continue despite errors to see if we get more diagnostic information
+        log.Printf("ERROR: %v", err)
+        return
     }
 
-    // Initialize OpenGL for each window and create resources
-    log.Printf("=== INITIALIZING OPENGL ===")
+    // Initialize OpenGL and create textures
     textures := make([]uint32, len(c.windows))
-    successful := 0
-
+    
     for i, window := range c.windows {
         if window == nil {
-            log.Printf("Window %d is nil, skipping OpenGL initialization", i)
             continue
         }
         
-        log.Printf("Initializing OpenGL for window %d", i)
-        
-        // Make this window's context current
         window.MakeContextCurrent()
         
-        // Initialize OpenGL
         if err := gl.Init(); err != nil {
             log.Printf("Failed to initialize OpenGL for window %d: %v", i, err)
             continue
         }
         
-        // Create texture for this window
+        // Create and configure texture
         var texture uint32
         gl.GenTextures(1, &texture)
-        textures[i] = texture
         gl.BindTexture(gl.TEXTURE_2D, texture)
-        
-        // Set texture parameters
-        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
         gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
         gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
         
-        successful++
-        log.Printf("Successfully initialized OpenGL for window %d", i)
+        textures[i] = texture
+    }
+
+    // Create a simple vertex buffer for rendering
+    vertices := []float32{
+        -1.0, -1.0, 0.0, 0.0, // bottom-left
+        1.0, -1.0, 1.0, 0.0,  // bottom-right
+        1.0, 1.0, 1.0, 1.0,   // top-right
+        -1.0, 1.0, 0.0, 1.0,  // top-left
     }
     
-    log.Printf("Successfully initialized OpenGL for %d of %d windows", successful, len(c.windows))
-    log.Printf("=== OPENGL INITIALIZATION COMPLETE ===")
-
+    indices := []uint32{
+        0, 1, 2, // first triangle
+        2, 3, 0, // second triangle
+    }
+    
+    // Create buffers
+    var vbo, vao, ebo uint32
+    gl.GenVertexArrays(1, &vao)
+    gl.GenBuffers(1, &vbo)
+    gl.GenBuffers(1, &ebo)
+    
+    gl.BindVertexArray(vao)
+    
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo)
+    gl.BufferData(gl.ARRAY_BUFFER, len(vertices)*4, gl.Ptr(vertices), gl.STATIC_DRAW)
+    
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ebo)
+    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, len(indices)*4, gl.Ptr(indices), gl.STATIC_DRAW)
+    
+    // Position attribute
+    gl.VertexAttribPointer(0, 2, gl.FLOAT, false, 4*4, gl.PtrOffset(0))
+    gl.EnableVertexAttribArray(0)
+    
+    // Texture coord attribute
+    gl.VertexAttribPointer(1, 2, gl.FLOAT, false, 4*4, gl.PtrOffset(2*4))
+    gl.EnableVertexAttribArray(1)
+    
+    // Shader program
+    vertexShaderSource := `
+        #version 330 core
+        layout (location = 0) in vec2 aPos;
+        layout (location = 1) in vec2 aTexCoord;
+        out vec2 TexCoord;
+        void main() {
+            gl_Position = vec4(aPos, 0.0, 1.0);
+            TexCoord = aTexCoord;
+        }
+    `
+    fragmentShaderSource := `
+        #version 330 core
+        in vec2 TexCoord;
+        out vec4 FragColor;
+        uniform sampler2D texture1;
+        void main() {
+            FragColor = texture(texture1, TexCoord);
+        }
+    `
+    
+    // Compile vertex shader
+    vertexShader := gl.CreateShader(gl.VERTEX_SHADER)
+    csource, free := gl.Strs(vertexShaderSource)
+    gl.ShaderSource(vertexShader, 1, csource, nil)
+    free()
+    gl.CompileShader(vertexShader)
+    
+    // Check for vertex shader compilation errors
+    var success int32
+    gl.GetShaderiv(vertexShader, gl.COMPILE_STATUS, &success)
+    if success == gl.FALSE {
+        var logLength int32
+        gl.GetShaderiv(vertexShader, gl.INFO_LOG_LENGTH, &logLength)
+        logMessage := string(make([]byte, logLength+1))
+        gl.GetShaderInfoLog(vertexShader, logLength, nil, gl.Str(logMessage+"\x00"))
+        log.Printf("Vertex shader compilation failed: %s", logMessage)
+    }
+    
+    // Compile fragment shader
+    fragmentShader := gl.CreateShader(gl.FRAGMENT_SHADER)
+    csource, free = gl.Strs(fragmentShaderSource)
+    gl.ShaderSource(fragmentShader, 1, csource, nil)
+    free()
+    gl.CompileShader(fragmentShader)
+    
+    // Check for fragment shader compilation errors
+    gl.GetShaderiv(fragmentShader, gl.COMPILE_STATUS, &success)
+    if success == gl.FALSE {
+        var logLength int32
+        gl.GetShaderiv(fragmentShader, gl.INFO_LOG_LENGTH, &logLength)
+        logMessage := string(make([]byte, logLength+1))
+        gl.GetShaderInfoLog(fragmentShader, logLength, nil, gl.Str(logMessage+"\x00"))
+        log.Printf("Fragment shader compilation failed: %s", logMessage)
+    }
+    
+    // Link shaders
+    shaderProgram := gl.CreateProgram()
+    gl.AttachShader(shaderProgram, vertexShader)
+    gl.AttachShader(shaderProgram, fragmentShader)
+    gl.LinkProgram(shaderProgram)
+    
+    // Check for linking errors
+    gl.GetProgramiv(shaderProgram, gl.LINK_STATUS, &success)
+    if success == gl.FALSE {
+        var logLength int32
+        gl.GetProgramiv(shaderProgram, gl.INFO_LOG_LENGTH, &logLength)
+        logMessage := string(make([]byte, logLength+1))
+        gl.GetProgramInfoLog(shaderProgram, logLength, nil, gl.Str(logMessage+"\x00"))
+        log.Printf("Shader program linking failed: %s", logMessage)
+    }
+    
+    gl.DeleteShader(vertexShader)
+    gl.DeleteShader(fragmentShader)
+    
     // Main display loop
     for !c.stopped {
+        // Poll events
         glfw.PollEvents()
-        
-        for i, window := range c.windows {            
-            // Skip nil windows
+
+        // Update each window
+        for i, window := range c.windows {
             if window == nil {
                 continue
             }
@@ -152,126 +238,88 @@ func (c *Client) updateDisplayLoop() {
                 c.Stop()
                 break
             }
-
-            // Verify the monitor index is valid
+            
+            // Skip if index is out of range
             if i >= int(c.localMonitors.MonitorCount) {
-                continue // Skip this window
+                continue
             }
+            
+            // Get monitor ID for this window
             monitorID := c.localMonitors.Monitors[i].ID
             
-            // Check if we have frame data for this monitor
+            // Get frame data (with mutex protection)
             c.frameMutex.Lock()
             frameData, exists := c.frameBuffers[monitorID]
             c.frameMutex.Unlock()
             
             if !exists || len(frameData) == 0 {
-                continue // Skip rendering if no frame data
+                continue
             }
             
-            // Make context current and render
+            // Make context current
             window.MakeContextCurrent()
-            c.renderFrame(window, frameData, textures[i])
+            
+            // Skip if frame data is invalid
+            if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
+                log.Printf("Invalid JPEG data, skipping frame")
+                continue
+            }
+            
+            // Decode JPEG
+            img, err := jpeg.Decode(bytes.NewReader(frameData))
+            if err != nil {
+                log.Printf("Error decoding JPEG: %v", err)
+                continue
+            }
+            
+            // Convert to RGBA
+            bounds := img.Bounds()
+            rgba := image.NewRGBA(bounds)
+            draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
+            
+            // Update texture
+            gl.BindTexture(gl.TEXTURE_2D, textures[i])
+            gl.TexImage2D(
+                gl.TEXTURE_2D,
+                0,
+                gl.RGBA,
+                int32(bounds.Dx()),
+                int32(bounds.Dy()),
+                0,
+                gl.RGBA,
+                gl.UNSIGNED_BYTE,
+                gl.Ptr(rgba.Pix),
+            )
+            
+            // Clear screen
+            gl.ClearColor(0.0, 0.0, 0.0, 1.0)
+            gl.Clear(gl.COLOR_BUFFER_BIT)
+            
+            // Draw textured quad
+            gl.UseProgram(shaderProgram)
+            gl.BindVertexArray(vao)
+            gl.DrawElements(gl.TRIANGLES, 6, gl.UNSIGNED_INT, nil)
+            
+            // Swap buffers
+            window.SwapBuffers()
         }
-        
-        // Add a small sleep to prevent excessive CPU usage
-        time.Sleep(16 * time.Millisecond) // ~60 FPS
     }
-
-    // Cleanup
+    
+    // Clean up resources
+    gl.DeleteVertexArrays(1, &vao)
+    gl.DeleteBuffers(1, &vbo)
+    gl.DeleteBuffers(1, &ebo)
+    gl.DeleteProgram(shaderProgram)
+    
     for i := range textures {
         if textures[i] != 0 {
             gl.DeleteTextures(1, &textures[i])
         }
     }
+    
     for _, window := range c.windows {
         if window != nil {
             window.Destroy()
         }
     }
-}
-
-// renderFrame renders a frame to the specified window
-func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture uint32) {
-    if len(frameData) == 0 {
-        // Clear window if no frame data
-        gl.ClearColor(0.0, 0.0, 0.0, 1.0) // Black background
-        gl.Clear(gl.COLOR_BUFFER_BIT)
-        window.SwapBuffers()
-        return
-    }
-    
-    // Validate JPEG format (check for SOI marker)
-    if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
-        log.Printf("Error: Invalid JPEG format in renderFrame: missing SOI marker")
-        // Clear window if frame data is invalid
-        gl.ClearColor(0.0, 0.0, 0.0, 1.0)
-        gl.Clear(gl.COLOR_BUFFER_BIT)
-        window.SwapBuffers()
-        return
-    }
-
-    // Decode JPEG frame data
-    img, err := jpeg.Decode(bytes.NewReader(frameData))
-    if err != nil {
-        log.Printf("Error decoding JPEG frame: %v", err)
-        return
-    }
-
-    // Convert image to RGBA
-    bounds := img.Bounds()
-    rgba := image.NewRGBA(bounds)
-    draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
-
-    // Bind the texture
-    gl.BindTexture(gl.TEXTURE_2D, texture)
-    
-    // Update texture with new frame data
-    gl.TexImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        int32(bounds.Dx()),
-        int32(bounds.Dy()),
-        0,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        gl.Ptr(rgba.Pix),
-    )
-
-    // Set up orthographic projection
-    gl.MatrixMode(gl.PROJECTION)
-    gl.LoadIdentity()
-    gl.Ortho(0, 1, 0, 1, -1, 1)
-    
-    // Set up model view
-    gl.MatrixMode(gl.MODELVIEW)
-    gl.LoadIdentity()
-    
-    // Clear screen
-    gl.ClearColor(0, 0, 0, 1)
-    gl.Clear(gl.COLOR_BUFFER_BIT)
-    
-    // Enable texturing
-    gl.Enable(gl.TEXTURE_2D)
-    
-    // Draw a textured quad
-    gl.Begin(gl.QUADS)
-    gl.TexCoord2f(0, 0)
-    gl.Vertex2f(0, 0)
-    
-    gl.TexCoord2f(1, 0)
-    gl.Vertex2f(1, 0)
-    
-    gl.TexCoord2f(1, 1)
-    gl.Vertex2f(1, 1)
-    
-    gl.TexCoord2f(0, 1)
-    gl.Vertex2f(0, 1)
-    gl.End()
-    
-    // Disable texturing
-    gl.Disable(gl.TEXTURE_2D)
-    
-    // Swap buffers
-    window.SwapBuffers()
 }
