@@ -17,7 +17,8 @@ import (
 func (c *Client) createWindows() error {
 	// Initialize windows slice
 	c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
-
+    var windowsCreated uint32 = 0
+    
     log.Printf("Attempting to create %d windows for monitors", c.localMonitors.MonitorCount)
 	// Get GLFW monitors
 	monitors := glfw.GetMonitors()
@@ -58,8 +59,15 @@ func (c *Client) createWindows() error {
 		log.Printf("Creating window for monitor %d (%dx%d at %d,%d)", 
 			monitor.ID, monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY)
 		
+        // Calculate window dimensions - cap width at 1920 for better compatibility with multi-monitor setups
+        windowWidth := int(monitor.Width)
+        if windowWidth > 1920 {
+            windowWidth = 1920
+            log.Printf("Limiting window width to 1920 pixels for better compatibility")
+        }
+        
 		window, err := glfw.CreateWindow(
-			int(monitor.Width),
+			windowWidth,
 			int(monitor.Height),
 			"UltraRDP",
 			glfwMonitor, // Use GLFW monitor if available
@@ -71,9 +79,18 @@ func (c *Client) createWindows() error {
 
 		// Set window position
 		window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
+        
+        // Process events to avoid GLFW overloading
+        glfw.PollEvents()
+        
+        // Log success
+        windowsCreated++
+        log.Printf("Successfully created window %d of %d", windowsCreated, c.localMonitors.MonitorCount)
 
 		// Store window
 		c.windows[i] = window
+        
+        // Give GLFW time to process
 	}
 
 	return nil
@@ -89,6 +106,8 @@ func (c *Client) updateDisplayLoop() {
     // GLFW is already initialized in Start()
     defer glfw.Terminate()
 
+    log.Printf("Starting display loop")
+
     // Create windows for each mapped monitor
     if err := c.createWindows(); err != nil {
         log.Printf("Failed to create windows: %v", err)
@@ -103,6 +122,7 @@ func (c *Client) updateDisplayLoop() {
     textures := make([]uint32, len(c.windows))
     vaos := make([]uint32, len(c.windows))
     shaderPrograms := make([]uint32, len(c.windows))
+    successful := 0
 
     for i, window := range c.windows {
         if window == nil {
@@ -200,7 +220,12 @@ func (c *Client) updateDisplayLoop() {
         // Delete shaders as they're linked into the program and no longer necessary
         gl.DeleteShader(vertexShader)
         gl.DeleteShader(fragmentShader)
+        
+        successful++
+        log.Printf("Successfully initialized OpenGL for window %d", i)
     }
+    
+    log.Printf("Successfully initialized %d of %d windows with OpenGL", successful, len(c.windows))
 
     // Main display loop
     for !c.stopped {
