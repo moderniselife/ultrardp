@@ -2,8 +2,8 @@ package client
 
 import (
 	"fmt"
-	"log"
 	"time"
+	"os"
 	"runtime"
 
 	"github.com/go-gl/glfw/v3.3/glfw"
@@ -12,82 +12,126 @@ import (
 // We know from our test that GLFW works fine - simplifying to match our successful test
 // createWindows - simplified to create just one functional window first
 func (c *Client) createWindows() error {
-	// Just create a single window for now
-	log.Println("Creating a simplified test window...")
-	
-	// Absolute minimal hints
+	// Set exactly the same window hints that worked in our test program
 	glfw.DefaultWindowHints()
-
-	// Create a single window
-	window, err := glfw.CreateWindow(400, 300, "UltraRDP Test Window", nil, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create test window: %w", err)
+	glfw.WindowHint(glfw.Visible, glfw.True)
+	glfw.WindowHint(glfw.Decorated, glfw.True)
+	glfw.WindowHint(glfw.Resizable, glfw.False)
+	
+	// Initialize windows slice
+	c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
+	
+	// Create one window per monitor
+	for i := uint32(0); i < c.localMonitors.MonitorCount; i++ {
+		monitor := c.localMonitors.Monitors[i]
+		fmt.Printf("Creating window for monitor %d\n", monitor.ID)
+		
+		// Create window with same pattern as test program
+		window, err := glfw.CreateWindow(
+			640, 480, 
+			fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
+			nil, nil)
+		
+		if err != nil {
+			fmt.Printf("ERROR: Failed to create window: %v\n", err)
+			continue
+		}
+		
+		// Position based on monitor position
+		window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
+		window.Show()
+		
+		c.windows[i] = window
+		fmt.Printf("Window %d created successfully\n", i+1)
+		
+		// Process events after each window creation
+		glfw.PollEvents()
 	}
 	
-	log.Println("Test window created successfully")
+	// Check if we created any windows
+	windowCount := 0
+	for _, w := range c.windows {
+		if w != nil {
+			windowCount++
+		}
+	}
 	
-	// Make it visible
-	window.Show()
-	window.SetPos(100, 100)
+	if windowCount == 0 {
+		return fmt.Errorf("failed to create any windows")
+	}
 	
-	// Process events
+	fmt.Printf("Created %d windows successfully\n", windowCount)
+	
+	// Process events to ensure windows are visible
 	glfw.PollEvents()
-	
-	// Store the window
-	c.windows = make([]*glfw.Window, 1)
-	c.windows[0] = window
-	
-	log.Println("Window creation completed")
 	
 	return nil
 }
 
 // updateDisplayLoop handles the display loop for all monitors
 func (c *Client) updateDisplayLoop() {
-	// GLFW event handling must run on the main thread
-	fmt.Println("Locking OS thread for GLFW")
-	runtime.LockOSThread()
+	// Write directly to stdout for debugging
+	fmt.Fprintln(os.Stdout, "Starting display loop using GLFW")
 	
-	fmt.Println("Trying to initialize GLFW")
+	// GLFW event handling must run on the main thread
+	runtime.LockOSThread()
+
 	// Initialize GLFW
 	if err := glfw.Init(); err != nil {
-		log.Printf("Failed to initialize GLFW: %v", err)
+		fmt.Printf("Failed to initialize GLFW: %v\n", err)
 		return
 	}
-	fmt.Printf("GLFW initialized successfully, version: %s\n", glfw.GetVersionString())
+	fmt.Fprintf(os.Stdout, "GLFW initialized successfully, version: %s\n", glfw.GetVersionString())
 	defer glfw.Terminate()
 	
 	// Print info about monitors
 	monitors := glfw.GetMonitors()
-	fmt.Printf("Found %d monitors\n", len(monitors))
+	fmt.Fprintf(os.Stdout, "Found %d GLFW monitors\n", len(monitors))
 	for i, monitor := range monitors {
 		x, y := monitor.GetPos()
 		w, h := monitor.GetVideoMode().Width, monitor.GetVideoMode().Height
-		fmt.Printf("Monitor %d: %s at (%d,%d) resolution %dx%d\n", 
+		fmt.Fprintf(os.Stdout, "Monitor %d: %s at (%d,%d) resolution %dx%d\n", 
 			i, monitor.GetName(), x, y, w, h)
 	}
-
+	
 	// Create windows for each monitor
-	if err := c.createWindows(); err != nil {  
-		log.Printf("ERROR: %v", err)
+	fmt.Fprintln(os.Stdout, "Creating windows...")
+	if err := c.createWindows(); err != nil {
+		fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
 		return
 	}
 	
-	fmt.Println("Starting main render loop")
-	
-	// Simple window management loop
-	startTime := time.Now()
-	for !c.stopped && time.Since(startTime) < 60*time.Second {
-		glfw.PollEvents() // Keep UI responsive
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	fmt.Println("Display loop terminated")
+	// Main display loop - keep windows open until stopped
+	fmt.Fprintln(os.Stdout, "Entering main display loop")
+	for !c.stopped {
+		// Poll for events to keep windows responsive
+		glfw.PollEvents()
 		
+		// Check if all windows are closed
+		allClosed := true
+		for _, window := range c.windows {
+			if window != nil && !window.ShouldClose() {
+				allClosed = false
+				break
+			}
+		}
+		
+		if allClosed {
+			fmt.Fprintln(os.Stdout, "All windows closed, stopping client")
+			c.Stop()
+			break
+		}
+		
+		// Sleep to avoid high CPU usage
+		time.Sleep(16 * time.Millisecond)
+	}
+	
+	fmt.Fprintln(os.Stdout, "Display loop terminated")
+	
 	// Clean up windows
 	for _, w := range c.windows {
 		if w != nil {
-			fmt.Println("Destroying window")
+			fmt.Fprintln(os.Stdout, "Destroying window")
 			w.Destroy()
 		}
 	}
