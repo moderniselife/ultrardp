@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	
+	"github.com/go-gl/glfw/v3.3/glfw"
 	"github.com/moderniselife/ultrardp/protocol"
 )
 
@@ -21,6 +22,7 @@ type Client struct {
 	stopChan       chan struct{}
 	frameMutex     sync.Mutex
 	frameBuffers   map[uint32][]byte // Buffers for each monitor
+	windows        []*glfw.Window    // Windows for displaying frames
 }
 
 // NewClient creates a new UltraRDP client
@@ -202,28 +204,7 @@ func (c *Client) updateFrameBuffer(serverMonitorID uint32, frameData []byte) {
 
 // startDisplayLoop begins the display loop for rendering frames
 func (c *Client) startDisplayLoop() {
-	// TODO: Implement platform-specific display
-	// This would use libraries like:
-	// - Windows: Direct3D or OpenGL
-	// - macOS: Metal or OpenGL
-	// - Linux: OpenGL or Vulkan
-	
-	log.Println("Display loop started")
-	
-	// Placeholder for display loop
-	for !c.stopped {
-		// 1. Get latest frame for each monitor
-		// 2. Decode frame if needed
-		// 3. Render to appropriate monitor
-		
-		// Check if we should stop
-		select {
-		case <-c.stopChan:
-			return
-		default:
-			// Continue displaying
-		}
-	}
+	go c.updateDisplayLoop()
 }
 
 // startInputCapture begins capturing user input
