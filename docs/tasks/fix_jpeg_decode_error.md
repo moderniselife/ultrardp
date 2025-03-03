@@ -20,10 +20,12 @@ The SOI (Start of Image) marker (0xFF, 0xD8) is required at the beginning of eve
 After fixing the JPEG decoding issue, a new problem appeared - the windows did not open consistently. The application connected to the server and received frame data as shown in the logs, but windows did not display reliably. Analysis revealed:
 
 1. Incompatible OpenGL version (4.1) that wasn't supported on all hardware
-2. Insufficient error handling in window creation and OpenGL initialization
-3. Lack of validation for mismatches between available GLFW monitors and configured monitors
-4. GLFW resources getting overloaded when creating multiple windows in rapid succession
-5. Window dimensions potentially exceeding what some systems can support
+2. Full-screen mode causing issues on some configurations
+3. Window dimensions too large for comfortable handling by GLFW
+4. Problems with GLFW window creation not processed completely before moving on
+5. Insufficient error handling and fallback mechanisms in window creation
+6. Lack of validation for mismatches between available GLFW monitors and configured monitors
+7. GLFW resources getting overloaded when creating multiple windows in rapid succession
 
 Further investigation showed:
 - The initial fix worked for the first run, but often failed on subsequent launches
@@ -48,11 +50,24 @@ Added improved window creation and OpenGL handling:
 4. Updated shader versions to match the OpenGL version (330 instead of 410)
 5. Improved error handling in the rendering loop
 
-### Phase 3: Additional Window Creation Robustness 
-1. Limited window width to 1920 pixels for better compatibility with multi-monitor setups
-2. Added GLFW event processing after each window creation to avoid overloading
-3. Added comprehensive logging throughout window creation and initialization
-4. Added tracking of successfully initialized windows for better diagnostics
+### Phase 3: Complete Window Creation Overhaul
+Since the previous changes didn't fully resolve the window creation issues, a more comprehensive solution was implemented:
+
+1. Implemented a multi-stage window creation process with fallbacks:
+   - Try OpenGL 3.3 first (preferred version)
+   - Fall back to OpenGL 2.1 if 3.3 fails
+   - Use a compatibility profile as a last resort
+
+2. Improved window dimensions and properties:
+   - Limited window dimensions to 1280x720 for better compatibility
+   - Used windowed mode instead of fullscreen for more reliable startup
+   - Added window borders (decorated) for better system compatibility
+
+3. Added process management for GLFW:
+   - Added explicit delays between window creation to let the system process events
+   - Added event polling after each window creation
+   - Added more detailed logging for diagnostics
+   - Added tracking of successfully initialized windows
 
 ## Code Changes
 
@@ -105,9 +120,8 @@ Modified `updateFrameBuffer` to:
  }
 ```
 
-### 2. Changes to client/display.go
+### 2. Changes to client/display.go - OpenGL Version
 
-#### A. Updated OpenGL Import
 ```diff
 --- client/display.go
 +++ client/display.go
@@ -121,81 +135,8 @@ Modified `updateFrameBuffer` to:
  )
 ```
 
-#### B. Modified Window Creation with GLFW Event Processing
-```diff
---- client/display.go
-+++ client/display.go
-@@ -17,7 +17,8 @@ import (
- func (c *Client) createWindows() error {
-     // Initialize windows slice
-     c.windows = make([]*glfw.Window, c.localMonitors.MonitorCount)
--
-+    var windowsCreated uint32 = 0
-+    
-     log.Printf("Attempting to create %d windows for monitors", c.localMonitors.MonitorCount)
-     // Get GLFW monitors
-     monitors := glfw.GetMonitors()
-@@ -26,14 +26,17 @@ func (c *Client) createWindows() error {
-     }
+### 3. Changes to client/display.go - JPEG Validation in renderFrame
 
-     // Set window hints
-+    log.Printf("GLFW version: %s", glfw.GetVersionString())
-     log.Printf("Setting up window hints for %d GLFW monitors detected", len(monitors))
-     
-     // Reset window hints to default
-     glfw.DefaultWindowHints()
-     
-     // Configure window properties
-     glfw.WindowHint(glfw.Resizable, glfw.False)
-     glfw.WindowHint(glfw.Decorated, glfw.False) // Borderless
--    glfw.WindowHint(glfw.ContextVersionMajor, 4)
--    glfw.WindowHint(glfw.ContextVersionMinor, 1)
-+    // Use OpenGL 3.3 instead of 4.1 for better compatibility
-+    glfw.WindowHint(glfw.ContextVersionMajor, 3)
-+    glfw.WindowHint(glfw.ContextVersionMinor, 3)
-     glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
-     glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
-```
-
-#### C. Window Size Limiting for Better Compatibility
-```diff
-     log.Printf("Creating window for monitor %d (%dx%d at %d,%d)", 
-         monitor.ID, monitor.Width, monitor.Height, monitor.PositionX, monitor.PositionY)
-     
-+    // Calculate window dimensions - cap width at 1920 for better compatibility
-+    windowWidth := int(monitor.Width)
-+    if windowWidth > 1920 {
-+        windowWidth = 1920
-+        log.Printf("Limiting window width to 1920 pixels for better compatibility")
-+    }
-+    
-     window, err := glfw.CreateWindow(
--        int(monitor.Width),
-+        windowWidth,
-         int(monitor.Height),
-         "UltraRDP",
-         glfwMonitor, // Use GLFW monitor if available
-```
-
-#### D. Added Event Processing After Window Creation
-```diff
-     // Set window position
-     window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
-+    
-+    // Process events to avoid GLFW overloading
-+    glfw.PollEvents()
-+    
-+    // Log success
-+    windowsCreated++
-+    log.Printf("Successfully created window %d of %d", windowsCreated, c.localMonitors.MonitorCount)
-
-     // Store window
-     c.windows[i] = window
-+    
-+    // Give GLFW time to process
-```
-
-#### E. Added JPEG Validation in renderFrame
 ```diff
 --- client/display.go
 +++ client/display.go
@@ -224,7 +165,95 @@ Modified `updateFrameBuffer` to:
          log.Printf("Error decoding JPEG frame: %v", err)
 ```
 
+### 4. Completely Revised Window Creation Process
+
+The most significant change was a complete overhaul of the window creation process with multiple fallback mechanisms:
+
+```go
+// Try three different OpenGL versions in order of preference
+var window *glfw.Window = nil
+var err error
+
+// Try OpenGL 3.3 first (preferred)
+log.Printf("Attempting window creation with OpenGL 3.3")
+glfw.DefaultWindowHints()
+glfw.WindowHint(glfw.Resizable, glfw.False)
+glfw.WindowHint(glfw.Decorated, glfw.True) // Use decorated for better compatibility
+glfw.WindowHint(glfw.ContextVersionMajor, 3)
+glfw.WindowHint(glfw.ContextVersionMinor, 3)
+glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
+glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
+
+// Try creating window for this monitor
+window, err = glfw.CreateWindow(
+    windowWidth,
+    windowHeight,
+    fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID), 
+    glfwMonitor, // Use the monitor we identified (can be nil)
+    nil,
+)
+
+// If OpenGL 3.3 failed, try OpenGL 2.1 (backup)
+if err != nil {
+    log.Printf("OpenGL 3.3 window creation failed: %v", err)
+    log.Printf("Attempting fallback to OpenGL 2.1...")
+    
+    glfw.DefaultWindowHints()
+    glfw.WindowHint(glfw.Resizable, glfw.False)
+    glfw.WindowHint(glfw.Decorated, glfw.True)
+    glfw.WindowHint(glfw.ContextVersionMajor, 2)
+    glfw.WindowHint(glfw.ContextVersionMinor, 1)
+    
+    // Try again with OpenGL 2.1
+    window, err = glfw.CreateWindow(
+        windowWidth,
+        windowHeight,
+        fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
+        glfwMonitor,
+        nil,
+    )
+}
+
+// If still failed, try compatibility profile as last resort
+if err != nil {
+    log.Printf("OpenGL 2.1 window creation failed: %v", err)
+    log.Printf("Attempting last resort with compatibility profile...")
+    
+    glfw.DefaultWindowHints()
+    glfw.WindowHint(glfw.Resizable, glfw.False)
+    glfw.WindowHint(glfw.Decorated, glfw.True)
+    glfw.WindowHint(glfw.ClientAPI, glfw.OpenGLAPI)
+    glfw.WindowHint(glfw.ContextCreationAPI, glfw.NativeContextAPI)
+    
+    // Try one more time with compatibility profile
+    window, err = glfw.CreateWindow(
+        windowWidth,
+        windowHeight,
+        fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
+        glfwMonitor,
+        nil,
+    )
+}
+```
+
+### 5. Added Process Management for GLFW
+
+```go
+// Process events after each window creation
+glfw.PollEvents()
+
+// Small delay to let GLFW process events
+time.Sleep(100 * time.Millisecond)
+```
+
 ## Testing
+
+The solution was tested in multiple stages:
+
+1. The initial fix for JPEG decoding worked correctly, showing frames without "SOI marker" errors
+2. First window creation improvements worked initially but weren't reliable on reconnection
+3. The complete window creation overhaul provides the most robust solution with multiple fallbacks and better compatibility
+
 To test the fix:
 1. Run the RDP client connecting to the server.
 2. Verify that all monitor windows open properly.

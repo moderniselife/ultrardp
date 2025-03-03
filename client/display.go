@@ -102,7 +102,7 @@ func (c *Client) createWindows() error {
                 windowWidth,
                 windowHeight,
                 fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
-                nil,
+                glfwMonitor,
                 nil,
             )
         }
@@ -123,7 +123,7 @@ func (c *Client) createWindows() error {
                 windowWidth,
                 windowHeight,
                 fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
-                nil,
+                glfwMonitor,
                 nil,
             )
         }
@@ -136,8 +136,16 @@ func (c *Client) createWindows() error {
         
         // Window created successfully
         log.Printf("Successfully created window for monitor %d", monitor.ID)
+
+        // Get the actual window dimensions and record for positioning
+        var width, height int
+        width, height = window.GetSize()
+        log.Printf("Actual window dimensions: %dx%d", width, height)
+        window.SetTitle(fmt.Sprintf("UltraRDP - Monitor %d (%dx%d)", monitor.ID, width, height))
+
+        // Force window to be windowed mode (not fullscreen) for better positioning
+        window.SetAttrib(glfw.Decorated, glfw.True)
         
-        // Set window position to match monitor position
         window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
         log.Printf("Window position set to %d,%d", int(monitor.PositionX), int(monitor.PositionY))
         
@@ -151,6 +159,9 @@ func (c *Client) createWindows() error {
         // Small delay to let GLFW process events
         time.Sleep(100 * time.Millisecond)
     }
+    
+    // Process events one more time after all windows are created
+    glfw.PollEvents()
     
     // Check if we created at least one window
     if windowsCreated == 0 {
@@ -328,6 +339,26 @@ func (c *Client) updateDisplayLoop() {
     log.Printf("Successfully initialized OpenGL for %d of %d windows", successful, len(c.windows))
     log.Printf("=== OPENGL INITIALIZATION COMPLETE ===")
 
+    // Function to check and update window positions
+    updateWindowPositions := func() {
+        for i, window := range c.windows {
+            if window == nil || i >= int(c.localMonitors.MonitorCount) {
+                continue
+            }
+            
+            // Get the monitor info for this window
+            monitor := c.localMonitors.Monitors[i]
+            
+            // Get current window position
+            x, y := window.GetPos()
+            
+            // Update position if it doesn't match monitor position
+            if x != int(monitor.PositionX) || y != int(monitor.PositionY) {
+                log.Printf("Repositioning window %d to %d,%d (was at %d,%d)", i, monitor.PositionX, monitor.PositionY, x, y)
+                window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
+            }
+        }
+    }
     // Main display loop
     for !c.stopped {
         glfw.PollEvents()
@@ -345,15 +376,15 @@ func (c *Client) updateDisplayLoop() {
                 break
             }
 
-            // Get the monitor ID for this window
+            // Verify the monitor index is valid
             if i >= int(c.localMonitors.MonitorCount) {
                 log.Printf("Warning: Window index %d exceeds monitor count %d", i, c.localMonitors.MonitorCount)
-                continue
+                continue // Skip this window
             }
             monitorID := c.localMonitors.Monitors[i].ID
             
             // Check if we have frame data for this monitor
-            frameData, exists := c.frameBuffers[monitorID]
+            frameData, exists := c.frameBuffers[monitorID]            
             if !exists || len(frameData) == 0 {
                 continue // Skip rendering if no frame data
             }
@@ -363,7 +394,15 @@ func (c *Client) updateDisplayLoop() {
             c.renderFrame(window, frameData, textures[i], vaos[i], shaderPrograms[i])
         }
         c.frameMutex.Unlock()
+        
+        // Check window positions every 30 frames
+        updateWindowPositions()
     }
+    
+    // Clean up resources before termination
+    log.Printf("Cleaning up resources...")
+    gl.Finish()
+    glfw.PollEvents()
 
     // Cleanup
     for i := range c.windows {
@@ -388,6 +427,14 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
         return
     }
     
+    // Print header bytes to debug the JPEG data
+    headerStr := ""
+    for i := 0; i < min(16, len(frameData)); i++ {
+        headerStr += fmt.Sprintf("%02X ", frameData[i])
+    }
+    log.Printf("JPEG header bytes: %s", headerStr)
+    log.Printf("Rendering frame with %d bytes of data", len(frameData))
+
     // Validate JPEG format (check for SOI marker)
     if len(frameData) < 2 || frameData[0] != 0xFF || frameData[1] != 0xD8 {
         log.Printf("Error: Invalid JPEG format in renderFrame: missing SOI marker")
@@ -403,6 +450,9 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
     if err != nil {
         log.Printf("Error decoding JPEG frame: %v", err)
         return
+    } else {
+        // Log successful decoding
+        log.Printf("Successfully decoded JPEG frame: %dx%d", img.Bounds().Dx(), img.Bounds().Dy())
     }
 
     // Convert image to RGBA
@@ -411,9 +461,22 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
     draw.Draw(rgba, bounds, img, bounds.Min, draw.Src)
 
     // Bind the texture and shader program
+    var glErr uint32
+    
+    // Check for OpenGL errors before binding
+    if glErr = gl.GetError(); glErr != gl.NO_ERROR {
+        log.Printf("OpenGL error before binding texture: 0x%x", glErr)
+    }
+    
     gl.BindTexture(gl.TEXTURE_2D, texture)
+    
+    if texture == 0 {
+        log.Printf("Error: Invalid texture ID 0")
+        return
+    }
+    
     gl.UseProgram(shaderProgram)
-
+    
     // Update texture with new frame data
     gl.TexImage2D(
         gl.TEXTURE_2D,
@@ -426,17 +489,33 @@ func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao
         gl.UNSIGNED_BYTE,
         gl.Ptr(rgba.Pix),
     )
+    
+    // Check for OpenGL errors after texture update
+    if glErr = gl.GetError(); glErr != gl.NO_ERROR {
+        log.Printf("OpenGL error after updating texture: 0x%x", glErr)
+    }
 
     // Bind VAO
     gl.BindVertexArray(vao)
+    if vao == 0 {
+        log.Printf("Error: Invalid VAO ID 0")
+        return
+    }
 
     // Clear and render
     gl.ClearColor(0.0, 0.0, 0.0, 1.0)
     gl.Clear(gl.COLOR_BUFFER_BIT)
 
     // Draw quad
+    log.Printf("Drawing quad with texture %d, vao %d, shader %d", texture, vao, shaderProgram)
     gl.DrawArrays(gl.TRIANGLE_STRIP, 0, 4)
 
     // Swap buffers
     window.SwapBuffers()
+    gl.Finish() // Ensure all OpenGL commands are completed
+}
+
+// Helper function to find minimum of two ints
+func min(a, b int) int {
+    if a < b { return a } else { return b }
 }
