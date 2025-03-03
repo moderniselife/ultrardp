@@ -13,6 +13,51 @@ import (
 	"github.com/go-gl/glfw/v3.3/glfw"
 )
 
+// createWindows creates GLFW windows for each mapped monitor
+func (c *Client) createWindows() error {
+	// Initialize windows slice
+	c.windows = make([]*glfw.Window, len(c.monitorMap))
+
+	// Get GLFW monitors
+	monitors := glfw.GetMonitors()
+	if len(monitors) == 0 {
+		return fmt.Errorf("no monitors detected by GLFW")
+	}
+
+	// Set window hints
+	glfw.WindowHint(glfw.Resizable, glfw.False)
+	glfw.WindowHint(glfw.Decorated, glfw.False) // Borderless
+	glfw.WindowHint(glfw.ContextVersionMajor, 4)
+	glfw.WindowHint(glfw.ContextVersionMinor, 1)
+	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
+	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
+
+	// Create a window for each monitor
+	for i, monitor := range c.localMonitors.Monitors {
+		// Create window
+		window, err := glfw.CreateWindow(
+			int(monitor.Width),
+			int(monitor.Height),
+			"UltraRDP",
+			monitors[i], // Use corresponding GLFW monitor
+			nil,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create window for monitor %d: %v", monitor.ID, err)
+		}
+
+		// Set window position
+		window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
+
+		// Store window
+		c.windows[i] = window
+	}
+
+	return nil
+}
+
+
+
 // updateDisplayLoop handles the display loop for all monitors
 func (c *Client) updateDisplayLoop() {
     // GLFW event handling must run on the main thread
@@ -157,39 +202,7 @@ func (c *Client) updateDisplayLoop() {
     }
 }
 
-// createWindows creates a window for each mapped monitor
-func (c *Client) createWindows() error {
-	c.windows = make([]*glfw.Window, 0, c.localMonitors.MonitorCount)
 
-	// Set window hints
-	glfw.WindowHint(glfw.ContextVersionMajor, 4)
-	glfw.WindowHint(glfw.ContextVersionMinor, 1)
-	glfw.WindowHint(glfw.OpenGLProfile, glfw.OpenGLCoreProfile)
-	glfw.WindowHint(glfw.OpenGLForwardCompatible, glfw.True)
-
-	// Create a window for each monitor
-	for _, monitor := range c.localMonitors.Monitors {
-		// Create window
-		window, err := glfw.CreateWindow(
-			int(monitor.Width),
-			int(monitor.Height),
-			fmt.Sprintf("UltraRDP - Monitor %d", monitor.ID),
-			nil,
-			nil,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to create window for monitor %d: %w", monitor.ID, err)
-		}
-
-		// Set window position
-		window.SetPos(int(monitor.PositionX), int(monitor.PositionY))
-
-		// Add to windows slice
-		c.windows = append(c.windows, window)
-	}
-
-	return nil
-}
 
 // renderFrame renders a frame to the specified window
 func (c *Client) renderFrame(window *glfw.Window, frameData []byte, texture, vao, shaderProgram uint32) {
