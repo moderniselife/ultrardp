@@ -574,11 +574,13 @@ func renderSimpleFullscreenTexture(textureID uint32) {
     // Draw a fullscreen quad with the texture - note correct orientation
     gl.Begin(gl.QUADS)
     
-    // Standard texture coordinates - [0,0] at bottom-left
+    // OpenGL has (0,0) at bottom-left, but image data (JPEG/PNG) has (0,0) at top-left
+    // Flip Y-coordinates to fix the upside-down rendering - [0,0] at bottom-left
+    // Flip Y-coordinates to match image data with origin at top-left
     gl.TexCoord2f(0.0, 0.0); gl.Vertex2f(0.0, 0.0) // Bottom-left
     gl.TexCoord2f(1.0, 0.0); gl.Vertex2f(1.0, 0.0) // Bottom-right
-    gl.TexCoord2f(1.0, 1.0); gl.Vertex2f(1.0, 1.0) // Top-right
-    gl.TexCoord2f(0.0, 1.0); gl.Vertex2f(0.0, 1.0) // Top-left
+    gl.TexCoord2f(1.0, 0.0); gl.Vertex2f(1.0, 1.0) // Top-right
+    gl.TexCoord2f(0.0, 0.0); gl.Vertex2f(0.0, 1.0) // Top-left
     
     gl.End()
     
